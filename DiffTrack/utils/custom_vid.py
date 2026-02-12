@@ -1,0 +1,109 @@
+import torch
+from torch.utils.data import Dataset, dataloader
+import os
+from PIL import Image
+import numpy as np
+import torch.nn.functional as F
+from typing import Mapping, Tuple, Union
+import cv2
+
+
+
+def resize_video(video: np.ndarray, output_size: Tuple[int, int]) -> np.ndarray:
+    """
+    Resize a video (T, H, W, C) to output_size using GPU with torch.
+
+    First resize each frame to (256, 256), then to output_size (H, W) (e.g., 480, 720).
+    """
+    video_tensor = torch.from_numpy(video).permute(0, 3, 1, 2).float()
+
+    # First resize to 256x256
+    video_resized_256 = F.interpolate(video_tensor, size=(256, 256), mode='bilinear', align_corners=False)
+
+    # Then resize to output size (H, W)
+    video_resized_final = F.interpolate(video_resized_256, size=output_size, mode='bilinear', align_corners=False)
+    # video_original = F.interpolate(video_tensor, size=(480, 720), mode='bilinear', align_corners=False)
+    video_original = video_tensor
+
+    return video_resized_final, video_original
+
+
+def resize_video_high_resol(video: np.ndarray, output_size: Tuple[int, int]) -> np.ndarray:
+    """Resize a video to output_size."""
+
+    # Then, resize each frame from 256x256 to 720x480:
+    video_resized = np.stack([cv2.resize(frame, (output_size[1], output_size[0])) for frame in video])
+    return video_resized
+
+class Video(Dataset):
+    def __init__(self, args):
+        data_root = args.vid_root #this will be a folder, containing folders of videos, which in turn will contain the frames
+        self.resize_shape = (args.resize_h, args.resize_w)
+        
+        # Get all video folders
+        self.video_folders = sorted([d for d in os.listdir(data_root) 
+                                     if os.path.isdir(os.path.join(data_root, d))])
+        self.data_root = data_root
+        
+        print(f"Found {len(self.video_folders)} videos in {data_root}")
+        
+    def __len__(self):
+        return len(self.video_folders)
+    
+    def __getitem__(self, index):
+        video_folder = self.video_folders[index]
+        video_path = os.path.join(self.data_root, video_folder)
+        
+        images = sorted(f for f in os.listdir(video_path) if f.lower().endswith((".png", ".jpg", ".jpeg")))
+        #open dataroot and store the .jpg files
+        frames = []
+        for f in images:
+            path = os.path.join(video_path, f)
+            img = Image.open(path).convert("RGB")
+            frames.append(np.array(img))
+        
+        # # Check if all frames have the same shape
+        # shapes = [frame.shape for frame in frames]
+        # if len(set(shapes)) > 1:
+        #     print(f"ERROR: Inconsistent frame shapes in {video_folder}: {set(shapes)}")
+        #     raise ValueError(f"All frames must have the same shape. Found: {set(shapes)}")
+        
+        video = np.stack(frames, axis = 0)
+        frames_ori = None
+        if self.resize_shape is not None:
+            video, frames_ori = resize_video(video, [self.resize_shape[0], self.resize_shape[1]])
+            # video is now a torch tensor (T, C, H, W)
+            # For grid sampling, permute to (T, H, W, C)
+            video_for_grid = video.permute(0, 2, 3, 1).cpu().numpy()  # (T, H, W, C)
+        else:
+            video_for_grid = video  # (T, H, W, C)
+
+        #now decide on what points to track
+        '''
+        THIS is challenging...for RAC, knowing what points to track is difficult..
+        '''
+        T = video.shape[0]
+        H = video.shape[2]
+        W = video.shape[3]
+
+        grid_step = 130  # ~30 points (5×6 grid)
+        y_coords = np.arange(0, H, grid_step, dtype=np.float32)
+        x_coords = np.arange(0, W, grid_step, dtype=np.float32)
+        if y_coords[-1] != H - 1: y_coords = np.append(y_coords, H - 1)
+        if x_coords[-1] != W - 1: x_coords = np.append(x_coords, W - 1)
+
+        yy, xx = np.meshgrid(y_coords, x_coords, indexing="ij")
+
+        query_points = np.stack(
+            [np.zeros_like(yy, dtype=np.float32), yy, xx], axis=-1
+        ).reshape(-1, 3)
+
+        # return similar to TAPVid format
+        if self.resize_shape is not None:
+            frames_tensor = video  # (T, C, H, W) for model input
+        else:
+            frames_tensor = torch.from_numpy(video).float()  # (T, C, H, W)
+
+        return frames_tensor, query_points, frames_ori
+
+
