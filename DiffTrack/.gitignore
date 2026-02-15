@@ -182,3 +182,6 @@ dataset/
 sample/
 tapvid_davis/
 tapvid_davis.zip
+
+#heavy folders/files
+optical_flow_tensors/
