@@ -1,16 +1,20 @@
 import os
 import pickle
 import torch
-from PIL import Image
-import torchvision.transforms as T
 import torch.nn.functional as F
-from sklearn.decomposition import PCA
+import torchvision.transforms as T
 import numpy as np
-import cv2
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+from PIL import Image
 
 print("Loading DINOv2 model...")
-dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').cuda() #can also experiment with dinov3 later..?
+dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').cuda()
 dino_model.eval()
+    
+VIDEO_DIR = "videos" 
+points_to_sample = 10
+grid_size = 20
 
 def get_semantic_mask(img_path, threshold_percentile=60):
     img = Image.open(img_path).convert('RGB')
@@ -58,35 +62,10 @@ def get_semantic_mask(img_path, threshold_percentile=60):
     return binary_mask
 
 
+# visualizing binary mask..
+# os.makedirs("mask_vis", exist_ok=True)
+# mask_path = os.path.join("mask_vis", f"{name}_mask.png")
+# mask_img = (active_mask.cpu().numpy().astype(np.uint8) * 255)
+# cv2.imwrite(mask_path, mask_img)
+# print(f"Saved mask to {mask_path}")
 
-if __name__ == "__main__":
-    # Test with a sample image
-    img_path = "/scratch/pbk5339/thesis/DiffTrack/videos/swim/frames_001.jpg"
-    name = "swim"
-    
-    binary_mask = get_semantic_mask(img_path, threshold_percentile=70)
-    
-    # Visualize the binary mask
-    os.makedirs("mask_vis", exist_ok=True)
-    
-    # Save binary mask
-    mask_img = (binary_mask.astype(np.uint8) * 255)
-    mask_path = os.path.join("mask_vis", f"{name}_mask.png")
-    cv2.imwrite(mask_path, mask_img)
-    print(f"Saved binary mask to {mask_path}")
-    
-    # Overlay mask on original image
-    img = Image.open(img_path).convert('RGB')
-    img_np = np.array(img)
-    
-    # Resize mask to match image size
-    mask_resized = cv2.resize(binary_mask.astype(np.uint8) * 255, (img_np.shape[1], img_np.shape[0]))
-    
-    # Create colored overlay
-    overlay = img_np.copy()
-    overlay[mask_resized > 127] = [0, 255, 0]  # Green for foreground
-    blended = cv2.addWeighted(img_np, 0.6, overlay, 0.4, 0)
-    
-    overlay_path = os.path.join("mask_vis", f"{name}_overlay.png")
-    cv2.imwrite(overlay_path, cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
-    print(f"Saved overlay to {overlay_path}")
