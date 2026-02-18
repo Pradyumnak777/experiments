@@ -110,8 +110,8 @@ dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').cuda()
 dino_model.eval()
     
 VIDEO_DIR = "videos" 
-points_to_sample = 5
-grid_size = 40
+points_to_sample = 10
+grid_size = 20
 
 def get_semantic_mask(img_path, threshold_percentile=60):
     img = Image.open(img_path).convert('RGB')
@@ -158,6 +158,14 @@ def get_semantic_mask(img_path, threshold_percentile=60):
     binary_mask = foreground_mask_hires > threshold
     return binary_mask
 
+
+# visualizing binary mask..
+# os.makedirs("mask_vis", exist_ok=True)
+# mask_path = os.path.join("mask_vis", f"{name}_mask.png")
+# mask_img = (active_mask.cpu().numpy().astype(np.uint8) * 255)
+# cv2.imwrite(mask_path, mask_img)
+# print(f"Saved mask to {mask_path}")
+
 for name, _ in flow_tensors_list:
     
     
@@ -169,11 +177,12 @@ for name, _ in flow_tensors_list:
         continue
     
     #using middle frame
-    middle_frame_path = os.path.join(video_path, frames[len(frames)//2])
+    # middle_frame_path = os.path.join(video_path, frames[len(frames)//2])
+    first_frame_path = os.path.join(video_path, frames[0])
     
     try:
         # returns true/1 ehre the "actor" is.
-        mask = get_semantic_mask(middle_frame_path, threshold_percentile=70) 
+        mask = get_semantic_mask(first_frame_path, threshold_percentile=60) 
         H, W = mask.shape
     except Exception as e:
         print(f"[{name}] dino failed: {e}")

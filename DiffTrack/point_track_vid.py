@@ -250,7 +250,7 @@ def main(args):
     '''
 
     for j, (video, query_points_i, video_ori) in enumerate(dataloader): #CHANGE MADE!
-        # if j == 0 or j == 1:
+        # if j == 0 or j == 1 or j == 2:
         #     print("skipping as videos already there..") #TEMPORARY!
         #     continue
         valid_mask = (query_points_i[:,:,0] == 0)

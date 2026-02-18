@@ -182,6 +182,7 @@ dataset/
 sample/
 tapvid_davis/
 tapvid_davis.zip
+sam_vit_h_4b8939.pth
 
 #heavy folders/files
 optical_flow_tensors/

@@ -138,40 +138,57 @@ class Video(Dataset):
         direction 2: using DINOv2..?
         '''
         points_path = os.path.join("points_to_sample", f"{video_folder}_points.pkl")
-        
-        query_points = None 
+
+        query_points = None
 
         if os.path.exists(points_path):
             try:
                 with open(points_path, "rb") as f:
                     data = pickle.load(f)
-                
-                    
+
                 raw_points = data["points"]
                 # DINO script saves the original dimensions (e.g., 520x960 or whatever the video was)
                 ORIG_H = data["orig_h"]
                 ORIG_W = data["orig_w"]
-                
-                query_points = np.asarray(raw_points, dtype=np.float32)
+
+                raw_points = np.asarray(raw_points, dtype=np.float32)
+                # Stored format from sampler: [t, x, y] -> convert to [t, y, x]
+                query_points = raw_points.copy()
+                query_points[:, 1] = raw_points[:, 2]  # y
+                query_points[:, 2] = raw_points[:, 1]  # x
 
                 # Calculate Scaling Factors to match current resize_shape
                 target_h = self.resize_shape[0]
                 target_w = self.resize_shape[1]
-                
-                scale_x = target_w / ORIG_W
+
                 scale_y = target_h / ORIG_H
-                
-                # Apply Scaling: index 1 is x, index 2 is y
-                query_points[:, 1] *= scale_x
-                query_points[:, 2] *= scale_y
-                
+                scale_x = target_w / ORIG_W
+
+                # Apply Scaling: index 1 is y, index 2 is x
+                query_points[:, 1] *= scale_y
+                query_points[:, 2] *= scale_x
+
                 # Safety Clamp (prevent index out of bounds)
-                query_points[:, 1] = np.clip(query_points[:, 1], 0, target_w - 1)
-                query_points[:, 2] = np.clip(query_points[:, 2], 0, target_h - 1)
-                
+                query_points[:, 1] = np.clip(query_points[:, 1], 0, target_h - 1)
+                query_points[:, 2] = np.clip(query_points[:, 2], 0, target_w - 1)
+
             except Exception as e:
                 print(f"Error loading points for {video_folder}: {e}. Falling back to grid.")
                 query_points = None
+
+        if query_points is None:
+            T = video.shape[0]
+            H = video.shape[2]
+            W = video.shape[3]
+            grid_step = 130  # ~30 points (5×6 grid)
+            y_coords = np.arange(0, H, grid_step, dtype=np.float32)
+            x_coords = np.arange(0, W, grid_step, dtype=np.float32)
+            if y_coords[-1] != H - 1: y_coords = np.append(y_coords, H - 1)
+            if x_coords[-1] != W - 1: x_coords = np.append(x_coords, W - 1)
+            yy, xx = np.meshgrid(y_coords, x_coords, indexing="ij")
+            query_points = np.stack(
+                [np.zeros_like(yy, dtype=np.float32), yy, xx], axis=-1
+            ).reshape(-1, 3)
         
         if self.resize_shape is not None:
             frames_tensor = video  # (T, C, H, W) for model input
