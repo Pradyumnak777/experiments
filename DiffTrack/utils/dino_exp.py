@@ -49,19 +49,19 @@ def dinov2_mask(img_path, threshold_percentile=50):
     foreground_map = torch.tensor(foreground_map).unsqueeze(0).unsqueeze(0)
     foreground_mask_hires = F.interpolate(foreground_map, size=(h, w), mode='bilinear').squeeze().numpy() #converting back to old size
     
-    # binary mask
-    threshold = np.percentile(foreground_mask_hires, threshold_percentile)
+    # # binary mask
+    # threshold = np.percentile(foreground_mask_hires, threshold_percentile)
     
     '''
     UPDATE this heuristic to a more powerful "group vote" method, instead of just relying on the left msot pixel..
     '''
-    if foreground_mask_hires[0,0] > threshold: #a guess...we are assumign tjhat the top left corner is always bacground and SHOULDNT be picked..
+    if foreground_mask_hires[0,0] > 0.5: #a guess...we are assumign tjhat the top left corner is always bacground and SHOULDNT be picked..
         #if it is picked..flip and recalc
         foreground_mask_hires = 1 - foreground_mask_hires
-        threshold = np.percentile(foreground_mask_hires, threshold_percentile)
+        # threshold = np.percentile(foreground_mask_hires, threshold_percentile)
 
-    binary_mask = foreground_mask_hires > threshold
-    return binary_mask
+    # binary_mask = foreground_mask_hires > threshold
+    return foreground_mask_hires
 
 def dinov3_mask(img_path, threshold_percentile=60):
     print("Loading DINOv3 model...")
@@ -107,22 +107,23 @@ def dinov3_mask(img_path, threshold_percentile=60):
     foreground_mask_hires = F.interpolate(foreground_map, size=(h, w), mode='bilinear').squeeze().numpy() 
     
     # binary mask
-    threshold = np.percentile(foreground_mask_hires, threshold_percentile)
+    # threshold = np.percentile(foreground_mask_hires, threshold_percentile)
     
-    if foreground_mask_hires[0,0] > threshold:
+    if foreground_mask_hires[0,0] > 0.5:
         # flip and redo
         foreground_mask_hires = 1 - foreground_mask_hires
-        threshold = np.percentile(foreground_mask_hires, threshold_percentile)
+        # threshold = np.percentile(foreground_mask_hires, threshold_percentile)
         
-    binary_mask = foreground_mask_hires > threshold
-    return binary_mask
+    # binary_mask = foreground_mask_hires > threshold
+    return foreground_mask_hires
 
 
-def visualize_dino_mask(img_path, mask, save_dir):
+def visualize_dino_heatmap(img_path, heatmap, save_dir):
     import matplotlib.pyplot as plt
     import numpy as np
     import os
-    # Naming logic
+    
+    # naming logic
     parts = os.path.normpath(img_path).split(os.sep)
     if "videos" in parts:
         videos_idx = parts.index("videos")
@@ -131,26 +132,36 @@ def visualize_dino_mask(img_path, mask, save_dir):
         video_name = "unknown"
     frame_name = os.path.splitext(os.path.basename(img_path))[0]
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, f"{video_name}_{frame_name}_dino_mask.png")
+    save_path = os.path.join(save_dir, f"{video_name}_{frame_name}_dino_heatmap.png")
 
     img = np.array(Image.open(img_path).convert('RGB'))
-    plt.figure(figsize=(10, 5))
+    
+    plt.figure(figsize=(12, 5))
+    
+    # original image
     plt.subplot(1, 2, 1)
     plt.imshow(img)
     plt.title("Original Image")
     plt.axis('off')
+    
+    # the heatmap
     plt.subplot(1, 2, 2)
-    plt.imshow(mask, cmap='viridis')
-    plt.title("DINO Mask")
+    # but 'viridis' is the classic scientific look
+    im = plt.imshow(heatmap, cmap='viridis', vmin=0, vmax=1) 
+    plt.title("DINO PCA")
     plt.axis('off')
+    
+    # adding a colorbar so you can see the scale
+    plt.colorbar(im, fraction=0.046, pad=0.04)
+    
     plt.tight_layout()
     plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
     plt.close()
-    print(f"Saved mask visualization to {save_path}")
-
+    print(f"Saved heatmap to {save_path}")
 
 if __name__ == "__main__":
-    img_path = '/scratch/pbk5339/thesis/DiffTrack/videos/swim_2/frames_001.jpg'
+    img_path = '/scratch/pbk5339/thesis/DiffTrack/videos/swim_3/frames_006.jpg'
+    # mask = dinov3_mask(img_path)
     mask = dinov3_mask(img_path)
     save_dir = "dinov3_masks_experiment"
-    visualize_dino_mask(img_path, mask, save_dir)
+    visualize_dino_heatmap(img_path, mask, save_dir)

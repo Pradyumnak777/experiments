@@ -105,7 +105,7 @@ def save_anns(image, anns, output_path):
 
 
 if __name__ == "__main__":
-    image_path = '/scratch/pbk5339/thesis/DiffTrack/videos/swim/frames_001.jpg'
+    image_path = '/scratch/pbk5339/thesis/DiffTrack/videos/benchpress/frame_0001.jpg'
     # image, masks, output_dir = sam1_autoseg(image_path)
     image, masks, output_dir = sam2_autoseg(image_path)
 
