@@ -10,6 +10,9 @@ from PIL import Image
 import cv2
 from transformers import AutoModel
 from huggingface_hub import login
+import scipy.sparse.linalg
+from sklearn.metrics.pairwise import cosine_similarity
+
 login(token=os.environ.get("HF_TOKEN"))
 
 def dinov2_mask(img_path, threshold_percentile=50):
@@ -117,6 +120,78 @@ def dinov3_mask(img_path, threshold_percentile=60):
     # binary_mask = foreground_mask_hires > threshold
     return foreground_mask_hires
 
+def cutler_method(img_path, dino_model, patch_size = 14):
+    img = Image.open(img_path).convert('RGB')
+    w, h = img.size
+    
+    # 518 is for 14, 512 is for 16
+    input_res = 518 if patch_size == 14 else 512
+    
+    transform = T.Compose([
+        T.Resize((input_res, input_res)),
+        T.ToTensor(),
+        T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ])
+    img_tensor = transform(img).unsqueeze(0).cuda()
+    
+    with torch.no_grad():
+        if patch_size == 14:
+            # dinov2 hub logic
+            features_dict = dino_model.forward_features(img_tensor)
+            patch_tokens = features_dict['x_norm_patchtokens'][0]
+            cls_token = features_dict['x_norm_clstoken'][0]
+        else:
+            # dinov3 hf logic (skip 1 cls + 4 registers = 5)
+            outputs = dino_model(img_tensor)
+            patch_tokens = outputs.last_hidden_state[0, 5:, :]
+            cls_token = outputs.last_hidden_state[0, 0, :]
+
+    #same as before till here. Now instead of PCA-
+    
+    '''
+    logic of cutLER - read paper..
+    '''
+    cls_sim = F.cosine_similarity(cls_token.unsqueeze(0), patch_tokens)
+    cls_sim = (cls_sim - cls_sim.min()) / (cls_sim.max() - cls_sim.min())
+    cls_weight = cls_sim.cpu().numpy()
+    
+    features = patch_tokens.cpu().numpy()
+    A = cosine_similarity(features)
+    A = np.where(A < 0, 0, A)
+    
+    # tau = 0.2 # small threshold to ignore very low attention patches
+    tau = np.mean(cls_weight)
+    
+    #stability work
+    A = A * np.maximum(cls_weight[:, np.newaxis] > tau, 1e-6) * np.maximum(cls_weight[np.newaxis, :] > tau, 1e-6)
+    A = np.maximum(A, A.T)
+    np.fill_diagonal(A, A.diagonal() + 1e-6)
+    '''
+    Ncut/token cut logic..read paper
+    '''
+    D = np.diag(np.sum(A, axis=1))
+    L = D - A
+    _, eigvec = scipy.sparse.linalg.eigsh(L, k=2, which='SM', M=D)
+    fiedler_vec = eigvec[:, 1]
+    fiedler_vec = (fiedler_vec - fiedler_vec.min()) / (fiedler_vec.max() - fiedler_vec.min())
+    
+    patch_grid = input_res // patch_size
+    mask = fiedler_vec.reshape(patch_grid, patch_grid)
+    
+    mask_tensor = torch.tensor(mask).unsqueeze(0).unsqueeze(0)
+    mask_hires = F.interpolate(mask_tensor, size=(h, w), mode='bilinear').squeeze().numpy()
+    
+    top_mean = np.mean(mask_hires[0, :])
+    bottom_mean = np.mean(mask_hires[-1, :])
+    left_mean = np.mean(mask_hires[:, 0])
+    right_mean = np.mean(mask_hires[:, -1])
+    
+    edge_mean = (top_mean + bottom_mean + left_mean + right_mean) / 4.0
+    
+    if edge_mean > 0.5:
+        mask_hires = 1 - mask_hires
+        
+    return mask_hires
 
 def visualize_dino_heatmap(img_path, heatmap, save_dir):
     import matplotlib.pyplot as plt
@@ -160,8 +235,21 @@ def visualize_dino_heatmap(img_path, heatmap, save_dir):
     print(f"Saved heatmap to {save_path}")
 
 if __name__ == "__main__":
-    img_path = '/scratch/pbk5339/thesis/DiffTrack/videos/swim_3/frames_006.jpg'
+    img_path = '/scratch/pbk5339/thesis/DiffTrack/videos/benchpress/frame_0011.jpg'
     # mask = dinov3_mask(img_path)
-    mask = dinov3_mask(img_path)
-    save_dir = "dinov3_masks_experiment"
+    # save_dir = "dinov2_masks_experiment"
+    # visualize_dino_heatmap(img_path, mask, save_dir)
+    
+    # mask = dinov3_mask(img_path)
+    # save_dir = "dinov3_masks_experiment"
+    # visualize_dino_heatmap(img_path, mask, save_dir)
+    
+    #cutler method
+    print("Loading DINOv3 for Cutler/TokenCut...")
+    dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').cuda()
+    # dino_model = AutoModel.from_pretrained('facebook/dinov3-vitb16-pretrain-lvd1689m').cuda()
+    dino_model.eval()
+    mask = cutler_method(img_path, dino_model, patch_size=14)
+    
+    save_dir = "cutler_masks_experiment"
     visualize_dino_heatmap(img_path, mask, save_dir)
