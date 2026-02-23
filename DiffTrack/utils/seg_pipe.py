@@ -76,12 +76,12 @@ def sam_seg(fused_tensor, video_folder):
     )
     
     #get input boxes from the heatmap of the first frame
-    heatmap = fused_tensor[4].numpy()
+    heatmap = fused_tensor[0].numpy()
     #first frame did not wokr out well..
     
     
     
-    binary_region = heatmap > (np.max(heatmap) * 0.5)
+    binary_region = heatmap > (np.max(heatmap) * 0.2) #already salient regions...threshold can be lowered..
     coords = np.argwhere(binary_region) #get coords
     y_min, x_min = coords.min(axis=0)
     y_max, x_max = coords.max(axis=0)
@@ -180,11 +180,11 @@ def process_video_fusion(video_folder, name):
         img1_path = frame_paths[i]
         img2_path = frame_paths[i+1]
         
-        #1. dino pca map
+        #dino pca map
         dino_hires = get_pca_map(img1_path, dino_model)
         h, w = dino_hires.shape
         
-        #2. raft flow
+        #raft flow
         img1_t = read_image(img1_path)
         img2_t = read_image(img2_path)
         
@@ -196,17 +196,19 @@ def process_video_fusion(video_folder, name):
             flow = flow_output[-1][0] 
             
         #magnitude
-        flow_mag = torch.sqrt(flow[0]**2 + flow[1]**2)
+        flow_mag = torch.sqrt(flow[0]**2 + flow[1]**2) #this is speed..
         
         #resize flow to match dino
         flow_mag = flow_mag.unsqueeze(0).unsqueeze(0)
+        
+        #vectors are of different sizes..
         flow_hires = F.interpolate(flow_mag, size=(h, w), mode='bilinear').squeeze().cpu().numpy()
         
         #normalize flow
         flow_hires = (flow_hires - flow_hires.min()) / (flow_hires.max() - flow_hires.min() + 1e-6)
         
         #multiplying logic, if dino is high and flow is low, score will also be low. both should be high
-        combined_score = dino_hires * flow_hires 
+        combined_score = dino_hires * flow_hires #elementwise multipliation
         fused_scores.append(torch.tensor(combined_score, dtype=torch.float32))
         
     #save sequence
