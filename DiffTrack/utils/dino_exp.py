@@ -15,6 +15,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 login(token=os.environ.get("HF_TOKEN"))
 
+
+
 def dinov2_mask(img_path, threshold_percentile=50):
     print("Loading DINOv2 model...")
     dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').cuda()
@@ -120,11 +122,14 @@ def dinov3_mask(img_path, threshold_percentile=60):
     # binary_mask = foreground_mask_hires > threshold
     return foreground_mask_hires
 
-def maskcut_method(img_path, num_objects=2, patch_size=14):
+def maskcut_method(img_path, num_objects=2, patch_size=14, dino_model=None):
+    if dino_model is None:
+        print("pass the dino model!")
+        return -1
+    
+    device = next(dino_model.parameters()).device
+    
     #using hf dinov2 to grab the real attn maps
-    model_name = 'facebook/dinov2-small'
-    dino_model = AutoModel.from_pretrained(model_name, output_attentions=True).cuda()
-    dino_model.eval()
 
     img = Image.open(img_path).convert('RGB')
     w, h = img.size
@@ -136,8 +141,7 @@ def maskcut_method(img_path, num_objects=2, patch_size=14):
         T.ToTensor(),
         T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
     ])
-    img_tensor = transform(img).unsqueeze(0).cuda()
-
+    img_tensor = transform(img).unsqueeze(0).to(device)
     with torch.no_grad():
         outputs = dino_model(img_tensor, output_attentions=True)
         patch_tokens = outputs.last_hidden_state[0, 1:, :] 
@@ -149,7 +153,7 @@ def maskcut_method(img_path, num_objects=2, patch_size=14):
     
     #calc the similarity matrix between all patches
     A_base = cosine_similarity(features)
-    A_base = np.where(A_base < 0, 0, A_base) #no negative vibes
+    A_base = np.where(A_base < 0, 0, A_base) #no negative
     np.fill_diagonal(A_base, 1.0)
     
     patch_grid = input_res // patch_size
@@ -309,7 +313,12 @@ if __name__ == "__main__":
     # dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').cuda()
     # # dino_model = AutoModel.from_pretrained('facebook/dinov3-vitb16-pretrain-lvd1689m').cuda()
     # dino_model.eval()
-    masks = maskcut_method(img_path, num_objects = 2)
+    model_name = 'facebook/dinov2-small'
+    dino_model = AutoModel.from_pretrained(model_name, output_attentions=True).cuda()
+    dino_model.eval()
+
+    
+    masks = maskcut_method(img_path, num_objects = 2, dino_model=dino_model)
     
     save_dir = "cutler_masks_experiment"
     visualize_maskcut_results(img_path, masks, save_dir)

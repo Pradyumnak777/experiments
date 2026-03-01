@@ -15,61 +15,25 @@ from transformers import Sam2VideoModel, Sam2VideoProcessor
 from accelerate import Accelerator
 from dino_exp import maskcut_method
 from transformers import AutoModel
-# import torch.multiprocessing as mp
-# from concurrent.futures import ProcessPoolExecutor
-# import queue
+import torch.multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
+import queue
+import pynvml
 
-# #for parallel stuff
-# worker_dino = None
-# worker_raft = None
-# worker_device = None
-# worker_transform = None
+#for parallel stuff
+def get_free_gpus(limit=2):
+    pynvml.nvmlInit()
+    gpu_memory = []
+    for i in range(pynvml.nvmlDeviceGetCount()):
+        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        gpu_memory.append((i, info.free)) # (index, free_bytes)
+    
+    # Sort by most free memory first
+    sorted_gpus = sorted(gpu_memory, key=lambda x: x[1], reverse=True)
+    return [gpu[0] for gpu in sorted_gpus[:limit]]
 
-# #ignore warnings
-# import warnings
-# warnings.filterwarnings("ignore")
-
-# def get_pca_map(img_path, dino_model):
-#     #load image and get sizes
-#     img = Image.open(img_path).convert('RGB')
-#     w, h = img.size
-    
-#     transform = T.Compose([
-#         T.Resize((518, 518)),
-#         T.ToTensor(),
-#         T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-#     ])
-#     img_tensor = transform(img).unsqueeze(0).cuda()
-    
-#     #get features
-#     with torch.no_grad():
-#         features_dict = dino_model.forward_features(img_tensor)
-#         features = features_dict['x_norm_patchtokens']
-        
-#     #pca for main object
-#     features = features.cpu().numpy()[0] 
-#     pca = PCA(n_components=3)
-#     pca.fit(features)
-#     pca_features = pca.transform(features)
-    
-#     #1st component back to grid
-#     patch_h, patch_w = 518 // 14, 518 // 14
-#     foreground_map = pca_features[:, 0].reshape(patch_h, patch_w) 
-    
-#     #normalize
-#     foreground_map = (foreground_map - foreground_map.min()) / (foreground_map.max() - foreground_map.min())
-    
-#     #resize to original
-#     foreground_map = torch.tensor(foreground_map).unsqueeze(0).unsqueeze(0)
-#     dino_hires = F.interpolate(foreground_map, size=(h, w), mode='bilinear').squeeze().numpy()
-    
-#     #heuristic check
-#     if dino_hires[0,0] > 0.5:
-#         dino_hires = 1 - dino_hires
-
-#     return dino_hires
-
-def sam_seg(fused_tensor, video_folder, mask = None):
+def sam_seg(fused_tensor, video_folder):
     #take in image based (loosely) on the threshold of the fused tensor, then segment
     
     #appraoch 1: video propogation segmentation (based on 1st frame only)
@@ -92,8 +56,7 @@ def sam_seg(fused_tensor, video_folder, mask = None):
     
     
     
-    binary_region = heatmap > (np.max(heatmap) * 0.2) #already salient regions...threshold can be lowered..\
-    # binary_region = heatmap > 0.01
+    binary_region = heatmap > (np.max(heatmap) * 0.2) #already salient regions...threshold can be lowered..
     coords = np.argwhere(binary_region) #get coords
     y_min, x_min = coords.min(axis=0)
     y_max, x_max = coords.max(axis=0)
@@ -138,10 +101,7 @@ def sam_seg(fused_tensor, video_folder, mask = None):
     os.makedirs(output_dir, exist_ok=True)
     
     video_name = os.path.basename(video_folder)
-    if mask is None:
-        output_path = os.path.join(output_dir, f"{video_name}_sam2_tracking_overlay.mp4")
-    else:
-        output_path = os.path.join(output_dir, f"{video_name}_{mask}_sam2_tracking_overlay.mp4")
+    output_path = os.path.join(output_dir, f"{video_name}_sam2_tracking_overlay.mp4")
     h = int(inference_session.video_height)
     w = int(inference_session.video_width)
     
@@ -202,89 +162,116 @@ def get_camera_flow(img1, img2):
     
     return camera_flow
 
+#global vars for workers
+worker_dino = None
+worker_raft = None
+worker_device = None
+worker_transform = None
 
-def process_video_fusion(video_folder, name):
+#init worker on specific gpu
+def init_worker(gpu_queue):
+    global worker_dino, worker_raft, worker_device, worker_transform
+    gpu_id = gpu_queue.get()
+    worker_device = torch.device(f"cuda:{gpu_id}")
+    
+    #load models once
+    model_name = 'facebook/dinov2-small'
+    worker_dino = AutoModel.from_pretrained(model_name, output_attentions=True).to(worker_device).eval()
+    worker_raft = raft_large(pretrained=True, progress=False).to(worker_device).eval()
+    
+    #raft transform
+    worker_transform = T.Compose([
+        T.ConvertImageDtype(torch.float32),
+        T.Normalize(mean=0.5, std=0.5),
+        T.Resize(size=(520, 960)),
+    ])
+
+#process a single pair of frames
+def process_pair(args):
+    i, img1_path, img2_path = args
+    global worker_dino, worker_raft, worker_device, worker_transform
+    
+    #now, cutLER based on Dinov2 will give out 2 masks, for 2 salient objects
+    masks = maskcut_method(img1_path, num_objects = 2, dino_model = worker_dino)
+    
+    mask1 = masks[0]
+    mask2 = masks[1]
+    h, w = mask1.shape
+    
+    #raft flow
+    img1_t = read_image(img1_path)
+    img2_t = read_image(img2_path)
+    
+    batch1 = worker_transform(img1_t).unsqueeze(0).to(worker_device)
+    batch2 = worker_transform(img2_t).unsqueeze(0).to(worker_device)
+    
+    with torch.no_grad():
+        flow_output = worker_raft(batch1, batch2)
+        flow = flow_output[-1][0] 
+        
+    #camera motion cancellation (method 1: classical)
+    #convert to numpy directly to save disk reads
+    img1_np = img1_t.permute(1, 2, 0).numpy()[..., ::-1] 
+    img2_np = img2_t.permute(1, 2, 0).numpy()[..., ::-1]
+    
+    camera_flow_np = get_camera_flow(img1_np, img2_np) #shape is (h, w, 2)
+    camera_flow = torch.tensor(camera_flow_np).permute(2, 0, 1).to(worker_device)
+    
+    camera_flow_resized = F.interpolate(
+        camera_flow.unsqueeze(0), 
+        size=(flow.shape[1], flow.shape[2]), 
+        mode='bilinear'
+    ).squeeze(0)
+    
+    corrected_flow = flow - camera_flow_resized
+    
+    #magnitude
+    flow_mag = torch.sqrt(corrected_flow[0]**2 + corrected_flow[1]**2)
+    
+    #resize flow to match mask dimensions
+    flow_mag = flow_mag.unsqueeze(0).unsqueeze(0)
+    flow_hires = F.interpolate(flow_mag, size=(h, w), mode='bilinear').squeeze().cpu().numpy()
+    
+    #normalize flow
+    flow_hires = (flow_hires - flow_hires.min()) / (flow_hires.max() - flow_hires.min() + 1e-6)
+    
+    #compute fused scores for both masks
+    combined_score_mask1 = mask1 * flow_hires
+    combined_score_mask2 = mask2 * flow_hires
+    
+    return i, torch.tensor(combined_score_mask1, dtype=torch.float32), torch.tensor(combined_score_mask2, dtype=torch.float32)
+
+def process_video_fusion(video_folder, name, num_gpus=2):
     #get frame paths
     frame_paths = sorted(glob.glob(os.path.join(video_folder, "*.jpg")))
     if not frame_paths:
         raise FileNotFoundError(f"no frames found in {video_folder}")
         
-    print(f"processing {len(frame_paths)} frames for {name}...")
+    print(f"processing {len(frame_paths)} frames for {name} on {num_gpus} gpus...")
     
-    #load models once
-    model_name = 'facebook/dinov2-small'
-    dino_model = AutoModel.from_pretrained(model_name, output_attentions=True).cuda()
-    dino_model.eval()
-
-    raft_model = raft_large(pretrained=True, progress=False).cuda().eval()
+    #setup gpu queue
+    free_gpus = get_free_gpus(limit=num_gpus)
+    m = mp.Manager()
+    gpu_queue = m.Queue()
+    for gid in free_gpus:
+        gpu_queue.put(gid)
+        
+    #create arguments for parallel processing
+    pairs = [(i, frame_paths[i], frame_paths[i+1]) for i in range(len(frame_paths) - 1)]
     
-    #raft transform
-    raft_transform = T.Compose([
-        T.ConvertImageDtype(torch.float32),
-        T.Normalize(mean=0.5, std=0.5),
-        T.Resize(size=(520, 960)),
-    ])
+    results = []
     
-    fused_scores_mask1 = []
-    fused_scores_mask2 = []
-    
-    
-    #inference loop
-    for i in tqdm(range(len(frame_paths) - 1), desc="fusing pca and flow"):
-        img1_path = frame_paths[i]
-        img2_path = frame_paths[i+1]
-        
-        #now, cutLER based on Dinov2 will give out 2 masks, for 2 salient objects
-        
-        masks = maskcut_method(img1_path, num_objects = 2, dino_model = dino_model)
-        
-        mask1 = masks[0]
-        mask2 = masks[1]
-        h, w = mask1.shape
-        
-        #raft flow
-        img1_t = read_image(img1_path)
-        img2_t = read_image(img2_path)
-        
-        batch1 = raft_transform(img1_t).unsqueeze(0).cuda()
-        batch2 = raft_transform(img2_t).unsqueeze(0).cuda()
-        
-        with torch.no_grad():
-            flow_output = raft_model(batch1, batch2)
-            flow = flow_output[-1][0] 
+    #parallel inference loop
+    with ProcessPoolExecutor(max_workers=num_gpus, initializer=init_worker, initargs=(gpu_queue,)) as executor:
+        for res in tqdm(executor.map(process_pair, pairs), total=len(pairs), desc="fusing pca and flow"):
+            results.append(res)
             
-        #camera motion cancellation (method 1: classical)
-        img1_np = cv2.imread(img1_path) 
-        img2_np = cv2.imread(img2_path)
-        
-        camera_flow_np = get_camera_flow(img1_np, img2_np) #shape is (h, w, 2)
-        camera_flow = torch.tensor(camera_flow_np).permute(2, 0, 1).cuda()
-        
-        camera_flow_resized = F.interpolate(
-            camera_flow.unsqueeze(0), 
-            size=(flow.shape[1], flow.shape[2]), 
-            mode='bilinear'
-        ).squeeze(0)
-        
-        corrected_flow = flow - camera_flow_resized
-        
-        #magnitude
-        flow_mag = torch.sqrt(corrected_flow[0]**2 + corrected_flow[1]**2)
-        
-        #resize flow to match mask dimensions
-        flow_mag = flow_mag.unsqueeze(0).unsqueeze(0)
-        flow_hires = F.interpolate(flow_mag, size=(h, w), mode='bilinear').squeeze().cpu().numpy()
-        
-        #normalize flow
-        flow_hires = (flow_hires - flow_hires.min()) / (flow_hires.max() - flow_hires.min() + 1e-6)
-        
-        #compute fused scores for both masks
-        combined_score_mask1 = mask1 * flow_hires
-        combined_score_mask2 = mask2 * flow_hires
-        
-        fused_scores_mask1.append(torch.tensor(combined_score_mask1, dtype=torch.float32))
-        fused_scores_mask2.append(torch.tensor(combined_score_mask2, dtype=torch.float32))
-        
+    #sort results by original index
+    results.sort(key=lambda x: x[0])
+    
+    fused_scores_mask1 = [r[1] for r in results]
+    fused_scores_mask2 = [r[2] for r in results]
+    
     #save sequences for both masks
     output_dir = "fused_tensors"
     os.makedirs(output_dir, exist_ok=True)
@@ -335,27 +322,18 @@ def save_fusion_video(frame_paths, fused_tensor, name):
 
 
 if __name__ == "__main__":
-    # # run config
-    # video_name = "swim_2"   
-    # script_dir = os.path.dirname(os.path.abspath(__file__))
-    # project_root = os.path.dirname(script_dir)
-    # target_folder = os.path.join(project_root, f"videos/{video_name}")
-    
-    # #execute
-    # fused_tensor_mask1, fused_tensor_mask2 = process_video_fusion(target_folder, video_name)
-    
-    # frame_paths = sorted(glob.glob(os.path.join(target_folder, "*.jpg")))
-    # save_fusion_video(frame_paths, fused_tensor_mask1, f"{video_name}_mask1")
-    # save_fusion_video(frame_paths, fused_tensor_mask2, f"{video_name}_mask2")
-    
-    
-    #performing sam_seg on this fused heatmap..
-    video_name = "swim"  # set your video name here
-    mask_result_name = "swim_mask1"
+    #required for multiprocess spawn on clusters
+    mp.set_start_method('spawn', force=True)
+
+    # run config
+    video_name = "swim"   
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     target_folder = os.path.join(project_root, f"videos/{video_name}")
-    fused_tensor_path = os.path.join(project_root, "fused_tensors", f"{mask_result_name}_fused_scores.pkl")
-    with open(fused_tensor_path, "rb") as f:
-        fused_tensor = torch.tensor(pickle.load(f))
-    sam_seg(fused_tensor, target_folder, mask = mask_result_name)
+    
+    #execute
+    fused_tensor_mask1, fused_tensor_mask2 = process_video_fusion(target_folder, video_name)
+    
+    frame_paths = sorted(glob.glob(os.path.join(target_folder, "*.jpg")))
+    save_fusion_video(frame_paths, fused_tensor_mask1, f"{video_name}_mask1")
+    save_fusion_video(frame_paths, fused_tensor_mask2, f"{video_name}_mask2")
