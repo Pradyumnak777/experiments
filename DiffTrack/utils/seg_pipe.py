@@ -92,8 +92,8 @@ def sam_seg(fused_tensor, video_folder, mask = None):
     
     
     
-    binary_region = heatmap > (np.max(heatmap) * 0.2) #already salient regions...threshold can be lowered..\
-    # binary_region = heatmap > 0.01
+    # binary_region = heatmap > (np.max(heatmap) * 0.2) #already salient regions...threshold can be lowered..\
+    binary_region = heatmap > 0.45
     coords = np.argwhere(binary_region) #get coords
     y_min, x_min = coords.min(axis=0)
     y_max, x_max = coords.max(axis=0)
@@ -303,6 +303,24 @@ def process_video_fusion(video_folder, name):
     
     return final_video_tensor_mask1, final_video_tensor_mask2
 
+def visualize_fused_frame(frame_path, fused_tensor_value, output_path=None):
+    #read original frame
+    frame = cv2.imread(frame_path)
+    h, w, _ = frame.shape
+    
+    #convert heatmap to viridis-style colors
+    heatmap = (fused_tensor_value * 255).astype(np.uint8)
+    heatmap_color = cv2.applyColorMap(heatmap, cv2.COLORMAP_VIRIDIS)
+    
+    #side-by-side
+    combined = np.hstack((frame, heatmap_color))
+    
+    if output_path:
+        cv2.imwrite(output_path, combined)
+        print(f"saved frame visualization to {output_path}")
+    
+    return combined
+
 def save_fusion_video(frame_paths, fused_tensor, name):
     #setup output path
     output_path = f"fused_tensors/{name}_visualization.mp4"
@@ -318,16 +336,7 @@ def save_fusion_video(frame_paths, fused_tensor, name):
     print(f"saving visualization video to {output_path}...")
     
     for i in tqdm(range(len(fused_tensor)), desc="writing video"):
-        #read original frame
-        frame = cv2.imread(frame_paths[i])
-        
-        #convert heatmap to viridis-style colors
-        heatmap = (fused_tensor[i].numpy() * 255).astype(np.uint8)
-        heatmap_color = cv2.applyColorMap(heatmap, cv2.COLORMAP_VIRIDIS)
-        
-        #side-by-side
-        combined = np.hstack((frame, heatmap_color))
-        
+        combined = visualize_fused_frame(frame_paths[i], fused_tensor[i].numpy())
         out.write(combined)
         
     out.release()
@@ -349,13 +358,34 @@ if __name__ == "__main__":
     # save_fusion_video(frame_paths, fused_tensor_mask2, f"{video_name}_mask2")
     
     
-    #performing sam_seg on this fused heatmap..
-    video_name = "swim"  # set your video name here
-    mask_result_name = "swim_mask1"
+    # #performing sam_seg on this fused heatmap..
+    # video_name = "swim"  # set your video name here
+    # mask_result_name = "swim_mask1"
+    # script_dir = os.path.dirname(os.path.abspath(__file__))
+    # project_root = os.path.dirname(script_dir)
+    # target_folder = os.path.join(project_root, f"videos/{video_name}")
+    # fused_tensor_path = os.path.join(project_root, "fused_tensors", f"{mask_result_name}_fused_scores.pkl")
+    # with open(fused_tensor_path, "rb") as f:
+    #     fused_tensor = torch.tensor(pickle.load(f))
+    # sam_seg(fused_tensor, target_folder, mask = mask_result_name)
+    
+    # visualize specific frame from fused tensor
+    video_name = "swim_2"  
+    mask_result_name = "swim_2_mask2"
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     target_folder = os.path.join(project_root, f"videos/{video_name}")
+    
+    # load fused tensor from pkl
     fused_tensor_path = os.path.join(project_root, "fused_tensors", f"{mask_result_name}_fused_scores.pkl")
     with open(fused_tensor_path, "rb") as f:
         fused_tensor = torch.tensor(pickle.load(f))
-    sam_seg(fused_tensor, target_folder, mask = mask_result_name)
+    
+    # load frame paths
+    frame_paths = sorted(glob.glob(os.path.join(target_folder, "*.jpg")))
+    
+    output_dir = os.path.join(project_root, "fused_frame_visualization")
+    os.makedirs(output_dir, exist_ok=True)
+    frame_idx = 0  # change this to visualize different frames
+    output_frame_path = os.path.join(output_dir, f"{mask_result_name}_frame_{frame_idx}.png")
+    visualize_fused_frame(frame_paths[frame_idx], fused_tensor[frame_idx].numpy(), output_path=output_frame_path)
