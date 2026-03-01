@@ -18,45 +18,45 @@ from accelerate import Accelerator
 import warnings
 warnings.filterwarnings("ignore")
 
-def get_pca_map(img_path, dino_model):
-    #load image and get sizes
-    img = Image.open(img_path).convert('RGB')
-    w, h = img.size
+# def get_pca_map(img_path, dino_model):
+#     #load image and get sizes
+#     img = Image.open(img_path).convert('RGB')
+#     w, h = img.size
     
-    transform = T.Compose([
-        T.Resize((518, 518)),
-        T.ToTensor(),
-        T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-    ])
-    img_tensor = transform(img).unsqueeze(0).cuda()
+#     transform = T.Compose([
+#         T.Resize((518, 518)),
+#         T.ToTensor(),
+#         T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+#     ])
+#     img_tensor = transform(img).unsqueeze(0).cuda()
     
-    #get features
-    with torch.no_grad():
-        features_dict = dino_model.forward_features(img_tensor)
-        features = features_dict['x_norm_patchtokens']
+#     #get features
+#     with torch.no_grad():
+#         features_dict = dino_model.forward_features(img_tensor)
+#         features = features_dict['x_norm_patchtokens']
         
-    #pca for main object
-    features = features.cpu().numpy()[0] 
-    pca = PCA(n_components=3)
-    pca.fit(features)
-    pca_features = pca.transform(features)
+#     #pca for main object
+#     features = features.cpu().numpy()[0] 
+#     pca = PCA(n_components=3)
+#     pca.fit(features)
+#     pca_features = pca.transform(features)
     
-    #1st component back to grid
-    patch_h, patch_w = 518 // 14, 518 // 14
-    foreground_map = pca_features[:, 0].reshape(patch_h, patch_w) 
+#     #1st component back to grid
+#     patch_h, patch_w = 518 // 14, 518 // 14
+#     foreground_map = pca_features[:, 0].reshape(patch_h, patch_w) 
     
-    #normalize
-    foreground_map = (foreground_map - foreground_map.min()) / (foreground_map.max() - foreground_map.min())
+#     #normalize
+#     foreground_map = (foreground_map - foreground_map.min()) / (foreground_map.max() - foreground_map.min())
     
-    #resize to original
-    foreground_map = torch.tensor(foreground_map).unsqueeze(0).unsqueeze(0)
-    dino_hires = F.interpolate(foreground_map, size=(h, w), mode='bilinear').squeeze().numpy()
+#     #resize to original
+#     foreground_map = torch.tensor(foreground_map).unsqueeze(0).unsqueeze(0)
+#     dino_hires = F.interpolate(foreground_map, size=(h, w), mode='bilinear').squeeze().numpy()
     
-    #heuristic check
-    if dino_hires[0,0] > 0.5:
-        dino_hires = 1 - dino_hires
+#     #heuristic check
+#     if dino_hires[0,0] > 0.5:
+#         dino_hires = 1 - dino_hires
 
-    return dino_hires
+#     return dino_hires
 
 def sam_seg(fused_tensor, video_folder):
     #take in image based (loosely) on the threshold of the fused tensor, then segment
@@ -254,24 +254,25 @@ def save_fusion_video(frame_paths, fused_tensor, name):
     print("video saved successfully.")
 
 if __name__ == "__main__":
-    #run config
-    # video_name = "benchpress"   
-    # script_dir = os.path.dirname(os.path.abspath(__file__))
-    # project_root = os.path.dirname(script_dir)
-    # target_folder = os.path.join(project_root, f"videos/{video_name}")
-    
-    # #execute
-    # fused_tensor = process_video_fusion(target_folder, video_name)
-    
-    # frame_paths = sorted(glob.glob(os.path.join(target_folder, "*.jpg")))
-    # save_fusion_video(frame_paths, fused_tensor, video_name)
-    
-    #performing sam_seg on this fused heatmap..
-    video_name = "swim_3"  # set your video name here
+    # run config
+    video_name = "benchpress"   
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     target_folder = os.path.join(project_root, f"videos/{video_name}")
-    fused_tensor_path = os.path.join(project_root, "fused_tensors", f"{video_name}_fused_scores.pkl")
-    with open(fused_tensor_path, "rb") as f:
-        fused_tensor = torch.tensor(pickle.load(f))
-    sam_seg(fused_tensor, target_folder)
+    
+    #execute
+    fused_tensor = process_video_fusion(target_folder, video_name)
+    
+    frame_paths = sorted(glob.glob(os.path.join(target_folder, "*.jpg")))
+    save_fusion_video(frame_paths, fused_tensor, video_name)
+    
+    
+    # #performing sam_seg on this fused heatmap..
+    # video_name = "swim_3"  # set your video name here
+    # script_dir = os.path.dirname(os.path.abspath(__file__))
+    # project_root = os.path.dirname(script_dir)
+    # target_folder = os.path.join(project_root, f"videos/{video_name}")
+    # fused_tensor_path = os.path.join(project_root, "fused_tensors", f"{video_name}_fused_scores.pkl")
+    # with open(fused_tensor_path, "rb") as f:
+    #     fused_tensor = torch.tensor(pickle.load(f))
+    # sam_seg(fused_tensor, target_folder)

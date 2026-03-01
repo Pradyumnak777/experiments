@@ -120,78 +120,101 @@ def dinov3_mask(img_path, threshold_percentile=60):
     # binary_mask = foreground_mask_hires > threshold
     return foreground_mask_hires
 
-def cutler_method(img_path, dino_model, patch_size = 14):
+def maskcut_method(img_path, num_objects=2, patch_size=14):
+    #using hf dinov2 to grab the real attn maps
+    model_name = 'facebook/dinov2-small'
+    dino_model = AutoModel.from_pretrained(model_name, output_attentions=True).cuda()
+    dino_model.eval()
+
     img = Image.open(img_path).convert('RGB')
     w, h = img.size
     
-    # 518 is for 14, 512 is for 16
-    input_res = 518 if patch_size == 14 else 512
-    
+    #518 works for p14
+    input_res = 518 
     transform = T.Compose([
         T.Resize((input_res, input_res)),
         T.ToTensor(),
         T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
     ])
     img_tensor = transform(img).unsqueeze(0).cuda()
-    
-    with torch.no_grad():
-        if patch_size == 14:
-            # dinov2 hub logic
-            features_dict = dino_model.forward_features(img_tensor)
-            patch_tokens = features_dict['x_norm_patchtokens'][0]
-            cls_token = features_dict['x_norm_clstoken'][0]
-        else:
-            # dinov3 hf logic (skip 1 cls + 4 registers = 5)
-            outputs = dino_model(img_tensor)
-            patch_tokens = outputs.last_hidden_state[0, 5:, :]
-            cls_token = outputs.last_hidden_state[0, 0, :]
 
-    #same as before till here. Now instead of PCA-
-    
-    '''
-    logic of cutLER - read paper..
-    '''
-    cls_sim = F.cosine_similarity(cls_token.unsqueeze(0), patch_tokens)
-    cls_sim = (cls_sim - cls_sim.min()) / (cls_sim.max() - cls_sim.min())
-    cls_weight = cls_sim.cpu().numpy()
-    
+    with torch.no_grad():
+        outputs = dino_model(img_tensor, output_attentions=True)
+        patch_tokens = outputs.last_hidden_state[0, 1:, :] 
+        last_attn = outputs.attentions[-1] 
+        cls_attn = last_attn[0, :, 0, 1:].mean(dim=0)
+        cls_weight = cls_attn.cpu().numpy()
+        
     features = patch_tokens.cpu().numpy()
-    A = cosine_similarity(features)
-    A = np.where(A < 0, 0, A)
     
-    # tau = 0.2 # small threshold to ignore very low attention patches
-    tau = np.mean(cls_weight)
-    
-    #stability work
-    A = A * np.maximum(cls_weight[:, np.newaxis] > tau, 1e-6) * np.maximum(cls_weight[np.newaxis, :] > tau, 1e-6)
-    A = np.maximum(A, A.T)
-    np.fill_diagonal(A, A.diagonal() + 1e-6)
-    '''
-    Ncut/token cut logic..read paper
-    '''
-    D = np.diag(np.sum(A, axis=1))
-    L = D - A
-    _, eigvec = scipy.sparse.linalg.eigsh(L, k=2, which='SM', M=D)
-    fiedler_vec = eigvec[:, 1]
-    fiedler_vec = (fiedler_vec - fiedler_vec.min()) / (fiedler_vec.max() - fiedler_vec.min())
+    #calc the similarity matrix between all patches
+    A_base = cosine_similarity(features)
+    A_base = np.where(A_base < 0, 0, A_base) #no negative vibes
+    np.fill_diagonal(A_base, 1.0)
     
     patch_grid = input_res // patch_size
-    mask = fiedler_vec.reshape(patch_grid, patch_grid)
+    num_patches = patch_grid * patch_grid
     
-    mask_tensor = torch.tensor(mask).unsqueeze(0).unsqueeze(0)
-    mask_hires = F.interpolate(mask_tensor, size=(h, w), mode='bilinear').squeeze().numpy()
+    #keep track of what hasn't been picked yet
+    available_nodes = np.ones(num_patches, dtype=bool)
+    tau = np.mean(cls_weight)
+    masks_hires = []
     
-    top_mean = np.mean(mask_hires[0, :])
-    bottom_mean = np.mean(mask_hires[-1, :])
-    left_mean = np.mean(mask_hires[:, 0])
-    right_mean = np.mean(mask_hires[:, -1])
-    
-    edge_mean = (top_mean + bottom_mean + left_mean + right_mean) / 4.0
-    
-    if edge_mean > 0.5:
-        mask_hires = 1 - mask_hires
+    for i in range(num_objects):
+        if np.sum(available_nodes) < 10:
+            break
+            
+        if i == 0:
+            foreground_mask = cls_weight > tau
+        else:
+            foreground_mask = available_nodes
+            
+        current_valid_nodes = foreground_mask & available_nodes
+        valid_indices = np.where(current_valid_nodes)[0]
         
-    return mask_hires
+        #safety check: if we somehow isolated fewer than 2 patches, stop
+        if len(valid_indices) < 2:
+            break
+            
+        # 1. EXTRACT SUB-GRAPH
+        A_sub = A_base[np.ix_(valid_indices, valid_indices)]
+        np.fill_diagonal(A_sub, 1.0)
+        
+        # 2. SOLVE ONLY ON SUB-GRAPH
+        D_vec_sub = np.sum(A_sub, axis=1)
+        D_sub = np.diag(D_vec_sub)
+        L_sub = D_sub - A_sub
+        
+        evals, eigvec = scipy.linalg.eigh(L_sub, D_sub, subset_by_index=[1, 1])
+        fiedler_vec_sub = eigvec[:, 0]
+        fiedler_vec_sub = (fiedler_vec_sub - fiedler_vec_sub.min()) / (fiedler_vec_sub.max() - fiedler_vec_sub.min() + 1e-8)
+        
+        # 3. MAP BACK TO FULL GRID
+        fiedler_vec_full = np.zeros(num_patches)
+        fiedler_vec_full[valid_indices] = fiedler_vec_sub
+        
+        mask_map = fiedler_vec_full.reshape(patch_grid, patch_grid)
+        mask_tensor = torch.tensor(mask_map).unsqueeze(0).unsqueeze(0)
+        mask_hires = F.interpolate(mask_tensor, size=(h, w), mode='bilinear').squeeze().numpy()
+        
+        edge_mean = (np.mean(mask_hires[0, :]) + np.mean(mask_hires[-1, :]) + 
+                     np.mean(mask_hires[:, 0]) + np.mean(mask_hires[:, -1])) / 4.0
+        
+        if edge_mean > 0.5:
+            # only invert the valid nodes, leave the background as 0
+            fiedler_vec_sub = 1.0 - fiedler_vec_sub
+            fiedler_vec_full[valid_indices] = fiedler_vec_sub
+            mask_hires = 1.0 - mask_hires
+            
+        masks_hires.append(mask_hires)
+        
+        # 4. UPDATE AVAILABLE NODES FOR NEXT OBJECT
+        sub_binary_mask = fiedler_vec_sub > np.mean(fiedler_vec_sub)
+        full_binary_mask = np.zeros(num_patches, dtype=bool)
+        full_binary_mask[valid_indices] = sub_binary_mask
+        available_nodes = available_nodes & (~full_binary_mask)
+
+    return masks_hires
 
 def visualize_dino_heatmap(img_path, heatmap, save_dir):
     import matplotlib.pyplot as plt
@@ -234,8 +257,45 @@ def visualize_dino_heatmap(img_path, heatmap, save_dir):
     plt.close()
     print(f"Saved heatmap to {save_path}")
 
+
+def visualize_maskcut_results(img_path, masks, save_dir):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import os
+    
+    #naming logic remains the same
+    parts = os.path.normpath(img_path).split(os.sep)
+    video_name = parts[parts.index("videos") + 1] if "videos" in parts else "unknown"
+    frame_name = os.path.splitext(os.path.basename(img_path))[0]
+    os.makedirs(save_dir, exist_ok=True)
+    
+    img = np.array(Image.open(img_path).convert('RGB'))
+    num_masks = len(masks)
+    
+    #create a grid: 1 for original + N for masks
+    plt.figure(figsize=(4 * (num_masks + 1), 5))
+    
+    #show original
+    plt.subplot(1, num_masks + 1, 1)
+    plt.imshow(img)
+    plt.title("original")
+    plt.axis('off')
+    
+    #show each object found by maskcut
+    for i, m in enumerate(masks):
+        plt.subplot(1, num_masks + 1, i + 2)
+        plt.imshow(m, cmap='viridis', vmin=0, vmax=1)
+        plt.title(f"object {i+1}")
+        plt.axis('off')
+    
+    save_path = os.path.join(save_dir, f"{video_name}_{frame_name}_maskcut.png")
+    plt.tight_layout()
+    plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
+    plt.close()
+    print(f"saved multi-object visualization to {save_path}")
+
 if __name__ == "__main__":
-    img_path = '/scratch/pbk5339/thesis/DiffTrack/videos/benchpress/frame_0011.jpg'
+    img_path = '/scratch/pbk5339/thesis/DiffTrack/videos/swim/frames_009.jpg'
     # mask = dinov3_mask(img_path)
     # save_dir = "dinov2_masks_experiment"
     # visualize_dino_heatmap(img_path, mask, save_dir)
@@ -244,12 +304,12 @@ if __name__ == "__main__":
     # save_dir = "dinov3_masks_experiment"
     # visualize_dino_heatmap(img_path, mask, save_dir)
     
-    #cutler method
-    print("Loading DINOv3 for Cutler/TokenCut...")
-    dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').cuda()
-    # dino_model = AutoModel.from_pretrained('facebook/dinov3-vitb16-pretrain-lvd1689m').cuda()
-    dino_model.eval()
-    mask = cutler_method(img_path, dino_model, patch_size=14)
+    #cmaskcututler method
+    print("Loading DINOv3 for maskcut/cutler...")
+    # dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').cuda()
+    # # dino_model = AutoModel.from_pretrained('facebook/dinov3-vitb16-pretrain-lvd1689m').cuda()
+    # dino_model.eval()
+    masks = maskcut_method(img_path, num_objects = 2)
     
     save_dir = "cutler_masks_experiment"
-    visualize_dino_heatmap(img_path, mask, save_dir)
+    visualize_maskcut_results(img_path, masks, save_dir)
