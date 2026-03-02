@@ -1,4 +1,6 @@
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "8"
+
 import glob
 import pickle
 import torch
@@ -18,7 +20,6 @@ from transformers import AutoModel
 # import torch.multiprocessing as mp
 # from concurrent.futures import ProcessPoolExecutor
 # import queue
-
 # #for parallel stuff
 # worker_dino = None
 # worker_raft = None
@@ -90,19 +91,55 @@ def sam_seg(fused_tensor, video_folder, mask = None):
     heatmap = fused_tensor[0].numpy()
     #first frame did not wokr out well..
     
+    # heatmap_smoothed = cv2.GaussianBlur(heatmap, (11, 11), 0) #to ensure no "sharp" points..
+    robust_max = np.percentile(heatmap, 99)
+    binary_region = (heatmap > (robust_max * 0.2)).astype(np.uint8) * 255 #already salient regions...threshold can be lowered..\
+    # binary_region = heatmap > np.max(heatmap) * 0.2
     
+    #for holes.
+    kernel = np.ones((7, 7), np.uint8)
+    binary_region = cv2.morphologyEx(binary_region, cv2.MORPH_CLOSE, kernel)
     
-    # binary_region = heatmap > (np.max(heatmap) * 0.2) #already salient regions...threshold can be lowered..\
-    binary_region = heatmap > 0.45
-    coords = np.argwhere(binary_region) #get coords
-    y_min, x_min = coords.min(axis=0)
-    y_max, x_max = coords.max(axis=0)
+    '''
+    below is vanilla code, by just finding left most and rightmost bboxes
+    '''
+    # coords = np.argwhere(binary_region) #get coords
+    # y_min, x_min = coords.min(axis=0)
+    # y_max, x_max = coords.max(axis=0)
     
-    y_min, x_min = y_min.item(), x_min.item()
-    y_max, x_max = y_max.item(), x_max.item()
+    # y_min, x_min = y_min.item(), x_min.item()
+    # y_max, x_max = y_max.item(), x_max.item()
+    
+    # ann_frame_idx = 0
+    # obj_ids = [1] #only one box is needed..
+    # input_boxes = [[[x_min, y_min, x_max, y_max]]]
+    
+    '''
+    using countour logic below
+    '''
+    contours, _ = cv2.findContours(binary_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        raise ValueError("No salient object found above threshold!")
+    
+    h_img, w_img = heatmap.shape
+    largest_contour = max(contours, key=cv2.contourArea)
+    
+    x_min, y_min, box_w, box_h = cv2.boundingRect(largest_contour)
+    x_max = x_min + box_w
+    y_max = y_min + box_h
+    
+    #add a 10% breathing room around the box
+    padding_factor = 0.05
+    pad_x = int(box_w * padding_factor)
+    pad_y = int(box_h * padding_factor)
+    
+    x_min = max(0, x_min - pad_x)
+    y_min = max(0, y_min - pad_y)
+    x_max = min(w_img, x_max + pad_x)
+    y_max = min(h_img, y_max + pad_y)
     
     ann_frame_idx = 0
-    obj_ids = [1] #only one box is needed..
+    obj_ids = [1] 
     input_boxes = [[[x_min, y_min, x_max, y_max]]]
 
     processor.add_inputs_to_inference_session(
@@ -167,6 +204,36 @@ def sam_seg(fused_tensor, video_folder, mask = None):
     
     return video_segments
     
+def get_aligned_image(img1, img2, bg_mask=None):
+    gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+    gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+    
+    # Use the background mask to only track the pool, ignoring the swimmer
+    points_img1 = cv2.goodFeaturesToTrack(gray1, maxCorners=1000, qualityLevel=0.01, minDistance=10, mask=bg_mask)
+    
+    if points_img1 is None:
+        return img2 # Fallback if tracking fails
+        
+    points_img2, status, err = cv2.calcOpticalFlowPyrLK(gray1, gray2, points_img1, None)
+    
+    valid_points_img1 = points_img1[status == 1]
+    valid_points_img2 = points_img2[status == 1]
+    
+    if len(valid_points_img1) < 4:
+        return img2 # Need at least 4 points for homography
+        
+    # Calculate Homography mapping Frame 2 TO Frame 1
+    H, _ = cv2.findHomography(valid_points_img2, valid_points_img1, cv2.RANSAC, 3.0)
+    
+    if H is None:
+        return img2
+        
+    # Warp Frame 2 so the background aligns perfectly with Frame 1
+    h, w = img1.shape[:2]
+    aligned_img2 = cv2.warpPerspective(img2, H, (w, h))
+    
+    return aligned_img2
+
 
 def get_camera_flow(img1, img2):
     gray1 = cv2.cvtColor(img1, cv2.COLOR_RGB2GRAY)
@@ -242,34 +309,58 @@ def process_video_fusion(video_folder, name):
         mask2 = masks[1]
         h, w = mask1.shape
         
-        #raft flow
-        img1_t = read_image(img1_path)
-        img2_t = read_image(img2_path)
+        # #raft flow
+        # img1_t = read_image(img1_path)
+        # img2_t = read_image(img2_path)
         
-        batch1 = raft_transform(img1_t).unsqueeze(0).cuda()
-        batch2 = raft_transform(img2_t).unsqueeze(0).cuda()
+        # batch1 = raft_transform(img1_t).unsqueeze(0).cuda()
+        # batch2 = raft_transform(img2_t).unsqueeze(0).cuda()
         
-        with torch.no_grad():
-            flow_output = raft_model(batch1, batch2)
-            flow = flow_output[-1][0] 
-            
         #camera motion cancellation (method 1: classical)
         img1_np = cv2.imread(img1_path) 
         img2_np = cv2.imread(img2_path)
         
-        camera_flow_np = get_camera_flow(img1_np, img2_np) #shape is (h, w, 2)
-        camera_flow = torch.tensor(camera_flow_np).permute(2, 0, 1).cuda()
+        img1_np = cv2.resize(img1_np, (960, 520))
+        img2_np = cv2.resize(img2_np, (960, 520))
         
-        camera_flow_resized = F.interpolate(
-            camera_flow.unsqueeze(0), 
-            size=(flow.shape[1], flow.shape[2]), 
-            mode='bilinear'
-        ).squeeze(0)
         
-        corrected_flow = flow - camera_flow_resized
         
-        #magnitude
-        flow_mag = torch.sqrt(corrected_flow[0]**2 + corrected_flow[1]**2)
+        
+        '''
+        below is for using homography estimation on images
+        '''
+        bg_mask = (mask2 * 255).astype(np.uint8)
+        bg_mask_resized = cv2.resize(bg_mask, (960, 520), interpolation=cv2.INTER_NEAREST)
+        aligned_img2_np = get_aligned_image(img1_np, img2_np, bg_mask=bg_mask_resized)
+        img1_rgb = cv2.cvtColor(img1_np, cv2.COLOR_BGR2RGB)
+        aligned_img2_rgb = cv2.cvtColor(aligned_img2_np, cv2.COLOR_BGR2RGB)
+        
+        img1_t = torch.from_numpy(img1_rgb).permute(2, 0, 1).contiguous()
+        img2_t = torch.from_numpy(aligned_img2_rgb).permute(2, 0, 1).contiguous()
+        
+        batch1 = raft_transform(img1_t).unsqueeze(0).cuda()
+        batch2 = raft_transform(img2_t).unsqueeze(0).cuda()
+        
+        '''
+        below is for operating directly on flow vectors
+        '''
+        # camera_flow_np = get_camera_flow(img1_np, img2_np) #shape is (h, w, 2)
+        # camera_flow = torch.tensor(camera_flow_np).permute(2, 0, 1).cuda()
+        
+        # camera_flow_resized = F.interpolate(
+        #     camera_flow.unsqueeze(0), 
+        #     size=(flow.shape[1], flow.shape[2]), 
+        #     mode='bilinear'
+        # ).squeeze(0)
+        # corrected_flow = flow - camera_flow_resized
+        # #magnitude
+        # flow_mag = torch.sqrt(corrected_flow[0]**2 + corrected_flow[1]**2)
+        
+        with torch.no_grad():
+            flow_output = raft_model(batch1, batch2)
+            flow = flow_output[-1][0] 
+        
+        flow_mag = torch.sqrt(flow[0]**2 + flow[1]**2)
         
         #resize flow to match mask dimensions
         flow_mag = flow_mag.unsqueeze(0).unsqueeze(0)
@@ -344,8 +435,12 @@ def save_fusion_video(frame_paths, fused_tensor, name):
 
 
 if __name__ == "__main__":
+    
+    '''
+    uncomment below for generating fused tensor and video!
+    '''
     # # run config
-    # video_name = "swim_2"   
+    # video_name = "swim_3"   
     # script_dir = os.path.dirname(os.path.abspath(__file__))
     # project_root = os.path.dirname(script_dir)
     # target_folder = os.path.join(project_root, f"videos/{video_name}")
@@ -357,10 +452,12 @@ if __name__ == "__main__":
     # save_fusion_video(frame_paths, fused_tensor_mask1, f"{video_name}_mask1")
     # save_fusion_video(frame_paths, fused_tensor_mask2, f"{video_name}_mask2")
     
-    
+    '''
+    uncomment below for gernating sam2 segmentation video!
+    '''
     # #performing sam_seg on this fused heatmap..
-    # video_name = "swim"  # set your video name here
-    # mask_result_name = "swim_mask1"
+    # video_name = "swim_3"  # set your video name here
+    # mask_result_name = f"{video_name}_mask2"
     # script_dir = os.path.dirname(os.path.abspath(__file__))
     # project_root = os.path.dirname(script_dir)
     # target_folder = os.path.join(project_root, f"videos/{video_name}")
@@ -369,9 +466,12 @@ if __name__ == "__main__":
     #     fused_tensor = torch.tensor(pickle.load(f))
     # sam_seg(fused_tensor, target_folder, mask = mask_result_name)
     
+    '''
+    uncomment below to check the per frame masks in the fused tensor!
+    '''
     # visualize specific frame from fused tensor
-    video_name = "swim_2"  
-    mask_result_name = "swim_2_mask2"
+    video_name = "swim_3"  
+    mask_result_name = f"{video_name}_mask2"
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     target_folder = os.path.join(project_root, f"videos/{video_name}")
