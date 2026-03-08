@@ -220,6 +220,106 @@ def maskcut_method(img_path, num_objects=2, patch_size=14, dino_model=None):
 
     return masks_hires
 
+def maskcut_tensor_method(img_tensor, num_objects=2, patch_size=14, dino_model=None):
+    if dino_model is None:
+        print("pass the dino model!")
+        return -1
+    
+    device = next(dino_model.parameters()).device
+    
+    #using hf dinov2 to grab the real attn maps
+
+    if img_tensor.dim() == 3:
+        img_tensor = img_tensor.unsqueeze(0)
+    
+    _, _, h_orig, w_orig = img_tensor.shape
+    
+    #518 works for p14
+    input_res = 518 
+    transform = T.Compose([
+        T.Resize((input_res, input_res)),
+        T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ])
+    img_tensor = transform(img_tensor).to(device)
+    with torch.no_grad():
+        outputs = dino_model(img_tensor, output_attentions=True)
+        patch_tokens = outputs.last_hidden_state[0, 1:, :] 
+        last_attn = outputs.attentions[-1] 
+        cls_attn = last_attn[0, :, 0, 1:].mean(dim=0)
+        cls_weight = cls_attn.cpu().numpy()
+        
+    features = patch_tokens.cpu().numpy()
+    
+    #calc the similarity matrix between all patches
+    A_base = cosine_similarity(features)
+    A_base = np.where(A_base < 0, 0, A_base) #no negative
+    np.fill_diagonal(A_base, 1.0)
+    
+    patch_grid = input_res // patch_size
+    num_patches = patch_grid * patch_grid
+    
+    #keep track of what hasn't been picked yet
+    available_nodes = np.ones(num_patches, dtype=bool)
+    tau = np.mean(cls_weight)
+    masks_hires = []
+    
+    for i in range(num_objects):
+        if np.sum(available_nodes) < 10:
+            break
+            
+        if i == 0:
+            foreground_mask = cls_weight > tau
+        else:
+            foreground_mask = available_nodes
+            
+        current_valid_nodes = foreground_mask & available_nodes
+        valid_indices = np.where(current_valid_nodes)[0]
+        
+        #safety check: if we somehow isolated fewer than 2 patches, stop
+        if len(valid_indices) < 2:
+            break
+            
+        # 1. EXTRACT SUB-GRAPH
+        A_sub = A_base[np.ix_(valid_indices, valid_indices)]
+        np.fill_diagonal(A_sub, 1.0)
+        
+        # 2. SOLVE ONLY ON SUB-GRAPH
+        D_vec_sub = np.sum(A_sub, axis=1)
+        D_sub = np.diag(D_vec_sub)
+        L_sub = D_sub - A_sub
+        
+        evals, eigvec = scipy.linalg.eigh(L_sub, D_sub, subset_by_index=[1, 1])
+        fiedler_vec_sub = eigvec[:, 0]
+        fiedler_vec_sub = (fiedler_vec_sub - fiedler_vec_sub.min()) / (fiedler_vec_sub.max() - fiedler_vec_sub.min() + 1e-8)
+        
+        # 3. MAP BACK TO FULL GRID
+        fiedler_vec_full = np.zeros(num_patches)
+        fiedler_vec_full[valid_indices] = fiedler_vec_sub
+        
+        mask_map = fiedler_vec_full.reshape(patch_grid, patch_grid)
+        mask_tensor = torch.tensor(mask_map).unsqueeze(0).unsqueeze(0)
+        mask_hires = F.interpolate(mask_tensor, size=(h_orig, w_orig), mode='bilinear').squeeze().numpy()
+        
+        edge_mean = (np.mean(mask_hires[0, :]) + np.mean(mask_hires[-1, :]) + 
+                     np.mean(mask_hires[:, 0]) + np.mean(mask_hires[:, -1])) / 4.0
+        
+        if edge_mean > 0.5:
+            # only invert the valid nodes, leave the background as 0
+            fiedler_vec_sub = 1.0 - fiedler_vec_sub
+            fiedler_vec_full[valid_indices] = fiedler_vec_sub
+            mask_hires = 1.0 - mask_hires
+            
+        masks_hires.append(mask_hires)
+        
+        # 4. UPDATE AVAILABLE NODES FOR NEXT OBJECT
+        sub_binary_mask = fiedler_vec_sub > np.mean(fiedler_vec_sub)
+        full_binary_mask = np.zeros(num_patches, dtype=bool)
+        full_binary_mask[valid_indices] = sub_binary_mask
+        available_nodes = available_nodes & (~full_binary_mask)
+
+    return masks_hires
+
+
 def visualize_dino_heatmap(img_path, heatmap, save_dir):
     import matplotlib.pyplot as plt
     import numpy as np
