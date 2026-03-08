@@ -1,0 +1,98 @@
+v_BabyCrawling_g01_c01
+1 29 64 105 155
+
+
+v_BabyCrawling_g02_c01
+1 23 49 83 108
+
+
+v_BabyCrawling_g03_c01
+0
+
+
+v_BabyCrawling_g04_c01
+10 46 79
+
+
+v_BabyCrawling_g05_c01
+0
+
+
+v_BabyCrawling_g06_c01
+0
+
+
+v_BabyCrawling_g07_c01
+1 26 44 59 73 91 117 139 163 194
+
+
+v_BabyCrawling_g08_c01
+9 62 90 121 148 185
+
+
+v_BabyCrawling_g09_c01
+1 38 91 137
+
+
+v_BabyCrawling_g10_c01
+1 27 43 60 77 119
+
+
+v_BabyCrawling_g11_c04
+1 31 54 83
+
+
+v_BabyCrawling_g12_c05
+40 80 101 122 143
+
+
+v_BabyCrawling_g13_c06
+1 24 49 81 107 136
+
+
+v_BabyCrawling_g14_c04
+6 27 46 81 113 144 174 202
+
+
+v_BabyCrawling_g15_c02
+4 38 80 125 179 212
+
+
+v_BabyCrawling_g16_c05
+12 38 68 116 202
+
+
+v_BabyCrawling_g17_c04
+1 47 97 154
+
+
+v_BabyCrawling_g18_c02
+30 85 158
+
+
+v_BabyCrawling_g19_c05
+1 26 42 61 121 147 170 192 217
+
+
+v_BabyCrawling_g20_c03
+35 70 97 123 150 184 224
+
+
+v_BabyCrawling_g21_c04
+1 37 91 143 189
+
+
+v_BabyCrawling_g22_c01
+1 31 53 76 97 120 147 197
+
+
+v_BabyCrawling_g23_c01
+1 18 34 51 66 84 106
+
+
+v_BabyCrawling_g24_c01
+1 66 85 163 184
+
+
+v_BabyCrawling_g25_c03
+9 45 96 129

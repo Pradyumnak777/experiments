@@ -1,0 +1,100 @@
+v_JumpingJack_g01_c01
+1 33 64
+
+
+v_JumpingJack_g02_c03
+1 39 72
+
+
+v_JumpingJack_g03_c02
+1 33 61
+
+
+v_JumpingJack_g04_c04
+1 29 57 85
+
+
+v_JumpingJack_g05_c03
+32 60 88
+
+
+v_JumpingJack_g06_c03
+1 28 54 79
+
+
+v_JumpingJack_g07_c01
+1 29 59 88
+
+
+v_JumpingJack_g08_c02
+0
+
+
+v_JumpingJack_g09_c01
+1 33 65
+
+
+v_JumpingJack_g10_c01
+1 25 47 69
+
+
+v_JumpingJack_g11_c03
+1 28 56 82
+
+
+v_JumpingJack_g12_c02
+1 33 66 95
+
+
+v_JumpingJack_g13_c02
+1 44 77 110
+
+
+v_JumpingJack_g14_c01
+1 30 60 92
+
+
+v_JumpingJack_g15_c01
+1 28 55 82
+
+
+v_JumpingJack_g16_c01
+1 34 69
+
+
+v_JumpingJack_g17_c03
+1 39 71 101
+
+
+v_JumpingJack_g18_c04
+1 36 67 97
+
+
+v_JumpingJack_g19_c03
+1 30 56 83
+
+
+v_JumpingJack_g20_c03
+1 49 95 140
+
+
+v_JumpingJack_g21_c04
+1 32 68 128
+
+
+v_JumpingJack_g22_c01
+1 29 57 89
+
+
+v_JumpingJack_g23_c03
+1 30 60 87
+
+
+v_JumpingJack_g24_c03
+1 32 63 93
+
+
+v_JumpingJack_g25_c02
+1 30 60 88
+
+

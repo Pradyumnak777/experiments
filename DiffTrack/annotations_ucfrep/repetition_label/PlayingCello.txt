@@ -1,0 +1,100 @@
+v_PlayingCello_g01_c01
+1 73 149 222
+
+
+v_PlayingCello_g02_c01
+33 47 59 81 110 122 134 155
+
+
+v_PlayingCello_g03_c04
+29 60 92 132 154
+
+
+v_PlayingCello_g04_c02
+15 89 130 170
+
+
+v_PlayingCello_g05_c02
+9 79 101 118 135 151 167 182 198
+
+
+v_PlayingCello_g06_c03
+0
+
+
+v_PlayingCello_g07_c01
+1 111 216 318
+
+
+v_PlayingCello_g08_c03
+20 117 144 
+
+
+v_PlayingCello_g09_c05
+1 91 208 295
+
+
+v_PlayingCello_g10_c05
+25 36 56 69 86 150 170 213
+
+
+v_PlayingCello_g11_c01
+0
+
+
+v_PlayingCello_g12_c06
+17 68 119 173 231
+
+
+v_PlayingCello_g13_c01
+20 39 58 74 89 102 119 139 160 185 
+
+
+v_PlayingCello_g14_c02
+8 39 64 87 111 139 162 187
+
+
+v_PlayingCello_g15_c04
+1 63 193 319
+
+
+v_PlayingCello_g16_c04
+0
+
+
+v_PlayingCello_g17_c02
+1 60 127 184 247 274 304 358 385
+
+
+v_PlayingCello_g18_c03
+76 125 150 174 198 227 247
+
+
+v_PlayingCello_g19_c03
+26 46 76 112 142 163 185 211
+
+
+v_PlayingCello_g20_c01
+13 35 47 84 98 113 152 173 181 196 203 218 224 238
+
+
+v_PlayingCello_g21_c03
+1 88 119 175 261
+
+
+v_PlayingCello_g22_c01
+1 129 256
+
+
+v_PlayingCello_g23_c06
+1 65 147 227
+
+
+v_PlayingCello_g24_c01
+44 55 66 119 181 208 236 258 288 307
+
+
+v_PlayingCello_g25_c02
+0
+
+

@@ -1,0 +1,100 @@
+v_TrampolineJumping_g01_c04
+1 32 62 89
+
+
+v_TrampolineJumping_g02_c01
+6 34 65 97 128 166 192 
+
+
+v_TrampolineJumping_g03_c03
+12 43 75 109 144 173 202 234 
+
+
+v_TrampolineJumping_g04_c04
+12 30 46 61 77
+
+
+v_TrampolineJumping_g05_c01
+0
+
+
+v_TrampolineJumping_g06_c02
+0
+
+
+v_TrampolineJumping_g07_c04
+15 32 51 73 90 118 139 168 185
+
+
+v_TrampolineJumping_g08_c02
+0
+
+
+v_TrampolineJumping_g09_c02
+90 112 138 164 190
+
+
+v_TrampolineJumping_g10_c04
+12 41 71 100 130 162 190
+
+
+v_TrampolineJumping_g11_c05
+11 42 73 108 141 173 201 234 266 300
+
+
+v_TrampolineJumping_g12_c02
+9 35 59 81 104 129 155 178
+
+
+v_TrampolineJumping_g13_c01
+0
+
+
+v_TrampolineJumping_g14_c02
+7 38 71 105 142 181 217 
+
+
+v_TrampolineJumping_g15_c05
+5 24 48 73 96 134 156 178
+
+
+v_TrampolineJumping_g16_c03
+1 22 48 75 102
+
+
+v_TrampolineJumping_g17_c02
+101 129 155 181 205 230
+
+
+v_TrampolineJumping_g18_c01
+0
+
+
+v_TrampolineJumping_g19_c05
+0
+
+
+v_TrampolineJumping_g20_c05
+42 67 90 109 128 147 168 188
+
+
+v_TrampolineJumping_g21_c01
+9 25 43 62 81 100 119 138 157 175 195
+
+
+v_TrampolineJumping_g22_c02
+64 92 121 153 
+
+
+v_TrampolineJumping_g23_c01
+0
+
+
+v_TrampolineJumping_g24_c01
+1 31 62 94 120 
+
+
+v_TrampolineJumping_g25_c03
+1 28 50 72 93 114 135
+
+

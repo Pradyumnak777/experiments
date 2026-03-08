@@ -1,0 +1,100 @@
+v_BreastStroke_g01_c01
+26 59 94
+
+
+v_BreastStroke_g02_c01
+1 38 81 127 172 216
+
+
+v_BreastStroke_g03_c01
+0
+
+
+v_BreastStroke_g04_c01
+20 46 73 100 125 151 177
+
+
+v_BreastStroke_g05_c02
+1 61 118 177
+
+
+v_BreastStroke_g06_c02
+1 47 90
+
+
+v_BreastStroke_g07_c01
+1 48 96 145 196 244
+
+
+v_BreastStroke_g08_c01
+4 42 80 117 153 187
+
+
+v_BreastStroke_g09_c04
+1 32 64
+
+
+v_BreastStroke_g10_c02
+1 55 102 148 192
+
+
+v_BreastStroke_g11_c01
+1 162 331
+
+
+v_BreastStroke_g12_c02
+13 59 102 144 186 228 268 310
+
+
+v_BreastStroke_g13_c01
+1 28 53
+
+
+v_BreastStroke_g14_c01
+0
+
+
+v_BreastStroke_g15_c01
+0
+
+
+v_BreastStroke_g16_c03
+1 44 86 130 175 221
+
+
+v_BreastStroke_g17_c02
+1 52 104
+
+
+v_BreastStroke_g18_c03
+1 40 77 120
+
+
+v_BreastStroke_g19_c04
+1 58 113 167 217
+
+
+v_BreastStroke_g20_c01
+1 45 99 142
+
+
+v_BreastStroke_g21_c01
+0
+
+
+v_BreastStroke_g22_c01
+6 31 56 81 104 128
+
+
+v_BreastStroke_g23_c01
+1 80 138 187 255 309
+
+
+v_BreastStroke_g24_c01
+1 50 98
+
+
+v_BreastStroke_g25_c01
+1 40 77 113 148 182
+
+

@@ -1,0 +1,100 @@
+v_HandStandPushups_g01_c04
+0
+
+
+v_HandStandPushups_g02_c04
+1 67 130
+
+
+v_HandStandPushups_g03_c04
+1 71 172
+
+
+v_HandStandPushups_g04_c04
+31 81 140 201
+
+
+v_HandStandPushups_g05_c04
+1 84 160
+
+
+v_HandStandPushups_g06_c02
+1 55 125
+
+
+v_HandStandPushups_g07_c04
+1 62 123
+
+
+v_HandStandPushups_g08_c04
+1 57 130
+
+
+v_HandStandPushups_g09_c03
+1 48 103
+
+
+v_HandStandPushups_g10_c04
+1 42 81 123
+
+
+v_HandStandPushups_g11_c03
+1 93 183
+
+
+v_HandStandPushups_g12_c07
+1 53 115 174 251
+
+
+v_HandStandPushups_g13_c07
+1 43 72 102 136
+
+
+v_HandStandPushups_g14_c04
+1 68 159
+
+
+v_HandStandPushups_g15_c04
+1 43 79 120
+
+
+v_HandStandPushups_g16_c07
+25 52 95 120 156
+
+
+v_HandStandPushups_g17_c02
+1 35 90
+
+
+v_HandStandPushups_g18_c02
+1 46 82 123
+
+
+v_HandStandPushups_g19_c02
+1 47 89 132
+
+
+v_HandStandPushups_g20_c02
+1 23 47 70 94 117
+
+
+v_HandStandPushups_g21_c04
+1 46 88
+
+
+v_HandStandPushups_g22_c02
+1 37 75 111
+
+
+v_HandStandPushups_g23_c04
+1 56 112
+
+
+v_HandStandPushups_g24_c02
+1 70 130
+
+
+v_HandStandPushups_g25_c06
+1 58 124 184
+
+

@@ -1,0 +1,100 @@
+v_TableTennisShot_g01_c06
+9 31 56 81 106 130 155 179 
+
+
+v_TableTennisShot_g02_c01
+13 39 64 90 115 140 166 189 215 
+
+
+v_TableTennisShot_g03_c04
+13 40 67 93 115
+
+
+v_TableTennisShot_g04_c05
+8 39 69 98
+
+
+v_TableTennisShot_g05_c03
+11 42 79 109 140 175 208 
+
+
+v_TableTennisShot_g06_c01
+23 94 174
+
+
+v_TableTennisShot_g07_c02
+1 22 44 67 90
+
+
+v_TableTennisShot_g08_c01
+6 31 54 75
+
+
+v_TableTennisShot_g09_c05
+12 35 61 84 109 135 161 
+
+
+v_TableTennisShot_g10_c02
+5 41 67 93 115 142 164 189 
+
+
+v_TableTennisShot_g11_c04
+29 74 118 159
+
+
+v_TableTennisShot_g12_c01
+23 54 83 112
+
+
+v_TableTennisShot_g13_c01
+24 47 73 95 118 143
+
+
+v_TableTennisShot_g14_c04
+7 27 46 67 102 122 141 160 179 198 217 236
+
+
+v_TableTennisShot_g15_c02
+13 32 51 70 102 120 140 162
+
+
+v_TableTennisShot_g16_c02
+16 47 79 112 141 172 203 234 267
+
+
+v_TableTennisShot_g17_c01
+17 43 73 108
+
+
+v_TableTennisShot_g18_c01
+7 55 105 153 201
+
+
+v_TableTennisShot_g19_c07
+36 81 129 177 222 271
+
+
+v_TableTennisShot_g20_c03
+8 37 67 95 122
+
+
+v_TableTennisShot_g21_c01
+7 34 62
+
+
+v_TableTennisShot_g22_c01
+24 51 76 101 126 151 176 201 224 250
+
+
+v_TableTennisShot_g23_c06
+10 30 51 72 98 128 147 167 189 211 232 248 268 287
+
+
+v_TableTennisShot_g24_c07
+21 47 71 116 146 177 206 231 257 281
+
+
+v_TableTennisShot_g25_c07
+7 31 55 78 103 126 151 175 198 222 248 272 293 316 340
+
+

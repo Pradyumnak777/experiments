@@ -1,0 +1,100 @@
+v_BenchPress_g01_c01
+1 36 122
+
+
+v_BenchPress_g02_c03
+1 44 144
+
+
+v_BenchPress_g03_c01
+1 31 61 93
+
+
+v_BenchPress_g04_c03
+8 81 129 164 208
+
+
+v_BenchPress_g05_c04
+1 50 187 298
+
+
+v_BenchPress_g06_c04
+6 72 179
+
+
+v_BenchPress_g07_c01
+1 26 51 73
+
+
+v_BenchPress_g08_c01
+1 23 45 64
+
+
+v_BenchPress_g09_c01
+1 28 56 84
+
+
+v_BenchPress_g10_c01
+1 38 76 112
+
+
+v_BenchPress_g11_c01
+1 33 66 98
+
+
+v_BenchPress_g12_c01
+1 24 46 65
+
+
+v_BenchPress_g13_c01
+1 32 66 140
+
+
+v_BenchPress_g14_c01
+1 34 67
+
+
+v_BenchPress_g15_c01
+1 25 46 67
+
+
+v_BenchPress_g16_c01
+1 36 72 107
+
+
+v_BenchPress_g17_c01
+1 25 50
+
+
+v_BenchPress_g18_c01
+1 26 69 93
+
+
+v_BenchPress_g19_c01
+1 31 61 92
+
+
+v_BenchPress_g20_c01
+1 30 58 87
+
+
+v_BenchPress_g21_c01
+1 45 154 188
+
+
+v_BenchPress_g22_c01
+1 30 59 88
+
+
+v_BenchPress_g23_c01
+1 44 88 131
+
+
+v_BenchPress_g24_c01
+1 24 47 69
+
+
+v_BenchPress_g25_c01
+1 33 73 107
+
+

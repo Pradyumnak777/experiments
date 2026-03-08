@@ -1,0 +1,100 @@
+v_HammerThrow_g01_c01
+19 38 53 64 75
+
+
+v_HammerThrow_g02_c01
+200 216 229 240 251
+
+
+v_HammerThrow_g03_c06
+173 192 207 219 231
+
+
+v_HammerThrow_g04_c01
+31 51 65 76 87
+
+
+v_HammerThrow_g05_c02
+188 207 225
+
+
+v_HammerThrow_g06_c04
+119 162 185 202 214 225 236
+
+
+v_HammerThrow_g07_c03
+54 76 94 105 115
+
+
+v_HammerThrow_g08_c01
+130 156 176
+
+
+v_HammerThrow_g09_c04
+104 116 127 138 148
+
+
+v_HammerThrow_g10_c01
+113 156 187 207 221 233 244
+
+
+v_HammerThrow_g11_c05
+1 44 75 96 111 123 134
+
+
+v_HammerThrow_g12_c03
+68 100 122 137 149 161
+
+
+v_HammerThrow_g13_c01
+94 113 131 143 154 164
+
+
+v_HammerThrow_g14_c02
+94 110 123 135 144
+
+
+v_HammerThrow_g15_c02
+172 190 205 217 229
+
+
+v_HammerThrow_g16_c01
+68 87 101 114 125
+
+
+v_HammerThrow_g17_c03
+97 117 131 142 153
+
+
+v_HammerThrow_g18_c04
+13 48 68 84 96 107 118
+
+
+v_HammerThrow_g19_c06
+170 186 198 209 220
+
+
+v_HammerThrow_g20_c05
+122 141 157 171 185
+
+
+v_HammerThrow_g21_c02
+123 141 154 165 176
+
+
+v_HammerThrow_g22_c02
+24 70 101 123 139 151
+
+
+v_HammerThrow_g23_c03
+118 150 173 189 202 214
+
+
+v_HammerThrow_g24_c01
+103 131 152 165 177 187
+
+
+v_HammerThrow_g25_c04
+92 121 142 157 169 180
+
+

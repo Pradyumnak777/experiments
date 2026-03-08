@@ -1,0 +1,100 @@
+v_HandstandWalking_g01_c04
+1 26 45 66 83 104 134
+
+
+v_HandstandWalking_g02_c03
+0
+
+
+v_HandstandWalking_g03_c04
+1 42 75 101 122
+
+
+v_HandstandWalking_g04_c04
+1 20 40 69 99 119
+
+
+v_HandstandWalking_g05_c05
+1 19 44 69 95 119 140 159 183 205 226 249 275
+
+
+v_HandstandWalking_g06_c01
+13 25 45 56 
+
+
+v_HandstandWalking_g07_c01
+23 40 60 90 115 137 159 186 216
+
+
+v_HandstandWalking_g08_c01
+6 22 39 54 73 88 106 122
+
+
+v_HandstandWalking_g09_c01
+1 31 57 83 108 132
+
+
+v_HandstandWalking_g10_c04
+8 44 107 130 154
+
+
+v_HandstandWalking_g11_c04
+4 24 54 74 101 131
+
+
+v_HandstandWalking_g12_c04
+1 29 58 82
+
+
+v_HandstandWalking_g13_c04
+0
+
+
+v_HandstandWalking_g14_c02
+1 26 51 81
+
+
+v_HandstandWalking_g15_c04
+8 33 60 86 112 139 164 188 217
+
+
+v_HandstandWalking_g16_c02
+8 35 63 88 113
+ 
+
+v_HandstandWalking_g17_c04
+1 28 41 64 86 109 135 155
+
+
+v_HandstandWalking_g18_c04
+1 28 60 88 120 145 170 193 217 243 268 293 319 339 359
+
+
+v_HandstandWalking_g19_c03
+15 46 75 101 134 173
+
+
+v_HandstandWalking_g20_c04
+1 27 57 83
+
+
+v_HandstandWalking_g21_c04
+14 45 74 100 128 173
+
+
+v_HandstandWalking_g22_c04
+3 45 83 113 141
+
+
+v_HandstandWalking_g23_c04
+13 52 83 136 165 193
+
+
+v_HandstandWalking_g24_c06
+1 32 53 75 98 123 149 168 195 219 241 268 295
+
+
+v_HandstandWalking_g25_c01
+3 30 54 90
+
+
