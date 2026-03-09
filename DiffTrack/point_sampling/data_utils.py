@@ -3,11 +3,14 @@ from torch.utils.data import Dataset
 import os
 import cv2
 from torchvision.transforms import v2
-import cv2
-from ..utils.dino_exp import maskcut_tensor_method #for dino
-from ..utils.depth_exp import get_frame_depth #for depth
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from utils.dino_exp import maskcut_tensor_method #for dino
+from utils.depth_exp import get_frame_depth #for depth
 from torchvision.models.optical_flow import raft_large #for optical flow
 import torch.nn.functional as F
+from transformers import AutoModel
+from depth_anything_3.api import DepthAnything3
 
 
 
@@ -19,6 +22,8 @@ def mp4_to_frames(video_path):
         ret, frame = cap.read()
         if not ret:
             break
+        # CONVERT BGR TO RGB
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frames.append(frame)
     
     cap.release()
@@ -37,10 +42,9 @@ transform = v2.Compose([
 
 raft_transform = v2.Compose([
     v2.ConvertImageDtype(torch.float32),
-    v2.Normalize(mean=0.5, std=0.5),
+    v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]), # <-- Fixed here
     v2.Resize(size=(520, 960)),
 ])
-
 
 def tensorize_vid(frames, transform):
     #to return a 4d tensor - [T, C, H, W]
@@ -49,7 +53,7 @@ def tensorize_vid(frames, transform):
     #the new v2 transform seems to be able to apply transforms to videos/batches..
     return transform(video_tensor)
 
-def preprocess(vid_tensor, name, dino_model, raft_model, depth_model = None):
+def preprocess(vid_tensor, raw_frames, name, dino_model, raft_model, depth_model = None):
     '''
     input format: [f0_tensor, f1_tensor, .., fn_tensor] -> (T, C, H, W)
     output format: save on disk like-
@@ -98,21 +102,21 @@ def preprocess(vid_tensor, name, dino_model, raft_model, depth_model = None):
         
         #now do raft
         if i < t - 1:
-            frame_t_next = vid_tensor[i+1].unsqueeze(0).cuda()
-            raft_f_curr = raft_transform(frame_t)
-            raft_f_next = raft_transform(frame_t_next)
+            curr_img = v2.functional.to_image(raw_frames[i])
+            next_img = v2.functional.to_image(raw_frames[i+1])
+            
+            raft_f_curr = raft_transform(curr_img).unsqueeze(0).cuda()
+            raft_f_next = raft_transform(next_img).unsqueeze(0).cuda()
+            
             with torch.no_grad():
                 flow_output = raft_model(raft_f_curr, raft_f_next)
                 flow = flow_output[-1][0]  #[2, h , w]
                 flow = F.interpolate(flow.unsqueeze(0), size=(h, w), mode="bilinear").squeeze(0)
             flow_list.append(flow.cpu())
-        else:
-            #pad with zero flow
-            flow_list.append(torch.zeros((2, h, w)))
         
         #now do depth
-        depth = get_frame_depth(frame_t, target_size=(h, w))
-        depth_list.append(depth.squeeze(0).cpu())
+        depth = get_frame_depth(raw_frames[i], depth_model)
+        depth_list.append(depth.cpu())
     
     torch.save(torch.stack(dino_list), os.path.join(video_dir, "dino.pt"))
     torch.save(torch.stack(flow_list), os.path.join(video_dir, "flow.pt"))
@@ -188,6 +192,20 @@ class UCFRep_train(Dataset):
 
 if __name__ == "__main__":
     dir = "UCF_Rep/train"
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #depth model
+    depth_model = DepthAnything3.from_pretrained("depth-anything/da3nested-giant-large")
+    depth_model = depth_model.to(device=device)
+    
+    #dino model
+    model_name = 'facebook/dinov2-small'
+    dino_model = AutoModel.from_pretrained(model_name, output_attentions=True).cuda()
+    dino_model.eval()
+    
+    #optical flow model
+    raft_model = raft_large(pretrained=True, progress=False).cuda().eval()
+
     # train_dict = {}
     for idx, vid_file in enumerate(os.listdir(dir)):
         #each one is an mp4 file
@@ -195,10 +213,9 @@ if __name__ == "__main__":
         # train_dict[f"video_{idx}"] = frames
         video_tensor = tensorize_vid(frames, transform)
         
-        preprocess(video_tensor, vid_file)
+        preprocess(video_tensor, frames, vid_file, dino_model, raft_model, depth_model)
         
     #we now have the intermediates files stored on disk
-    raft_model = raft_large(pretrained=True, progress=False).cuda().eval()
 
     
 

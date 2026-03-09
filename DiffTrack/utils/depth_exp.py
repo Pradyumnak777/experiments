@@ -1,18 +1,22 @@
 import torch
-from depth_anything_3.api import DepthAnything3
-import torch.nn.functional as F
+import torchvision.transforms.v2.functional as F_v2
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = DepthAnything3.from_pretrained("depth-anything/da3nested-giant-large")
-model = model.to(device=device)
-
-
-def get_frame_depth(frame_tensor, target_size=(224, 224)):
+def get_frame_depth(raw_frame, model, target_size=(224, 224)):
+    """
+    raw_frame: A single RGB numpy array from cv2
+    """
     with torch.no_grad():
-        depth = model(frame_tensor)
-        depth = F.interpolate(depth.unsqueeze(1), size=target_size, mode="bilinear", align_corners=False)
-        d_min = depth.min()
-        d_max = depth.max()
-        depth = (depth - d_min) / (d_max - d_min + 1e-8)
-    
-    return depth.squeeze(1)
+        prediction = model.inference([raw_frame])
+        
+        depth_numpy = prediction.depth[0]
+        
+        depth_tensor = torch.from_numpy(depth_numpy).unsqueeze(0).unsqueeze(0).float()
+        
+        depth_tensor = F_v2.resize(depth_tensor, target_size, antialias=True)
+        
+        d_min = depth_tensor.min()
+        d_max = depth_tensor.max()
+        depth_tensor = (depth_tensor - d_min) / (d_max - d_min + 1e-8)
+        
+    # Return as [1, H, W] on the GPU
+    return depth_tensor.squeeze(0).cuda()
