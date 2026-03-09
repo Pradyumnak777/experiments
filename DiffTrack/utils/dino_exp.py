@@ -250,6 +250,9 @@ def maskcut_tensor_method(img_tensor, num_objects=2, patch_size=14, dino_model=N
         
     features = patch_tokens.cpu().numpy()
     
+    
+    
+    
     #calc the similarity matrix between all patches
     A_base = cosine_similarity(features)
     A_base = np.where(A_base < 0, 0, A_base) #no negative
@@ -257,6 +260,16 @@ def maskcut_tensor_method(img_tensor, num_objects=2, patch_size=14, dino_model=N
     
     patch_grid = input_res // patch_size
     num_patches = patch_grid * patch_grid
+    
+    #in order to return the interpolated 14x14x384 grid (this is patch_tokens)
+    features_raw = patch_tokens #(1369, 384)
+    feats_2d = features_raw.reshape(patch_grid, patch_grid, 384).permute(2, 0, 1).unsqueeze(0)
+    dino_features_hires = F.interpolate(
+        feats_2d, 
+        size=(h_orig, w_orig), 
+        mode='bilinear', 
+        align_corners=False
+    ).squeeze(0) # shape now: [384, H, W]
     
     #keep track of what hasn't been picked yet
     available_nodes = np.ones(num_patches, dtype=bool)
@@ -317,7 +330,7 @@ def maskcut_tensor_method(img_tensor, num_objects=2, patch_size=14, dino_model=N
         full_binary_mask[valid_indices] = sub_binary_mask
         available_nodes = available_nodes & (~full_binary_mask)
 
-    return masks_hires
+    return masks_hires, dino_features_hires
 
 
 def visualize_dino_heatmap(img_path, heatmap, save_dir):
