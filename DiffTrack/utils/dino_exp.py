@@ -220,6 +220,28 @@ def maskcut_method(img_path, num_objects=2, patch_size=14, dino_model=None):
 
     return masks_hires
 
+def get_dino_features(img_tensor, dino_model):
+    #img_tensor: [1, 3, 518, 518] normalized
+    #dino_model: hf dinov2 model
+    
+    device = next(dino_model.parameters()).device
+    img_tensor = img_tensor.to(device)
+    
+    with torch.no_grad():
+        #extracting last hidden state
+        outputs = dino_model(img_tensor)
+        #shape is [1, 1370, 384] -> 1 cls token + 1369 patch tokens
+        patch_tokens = outputs.last_hidden_state[0, 1:, :] 
+        
+        #calc grid size (sqrt of 1369 is 37)
+        grid_size = int(patch_tokens.shape[0]**0.5)
+        
+        #reshape to [384, 37, 37]
+        features_raw = patch_tokens.reshape(grid_size, grid_size, 384).permute(2, 0, 1)
+        
+    #return as half precision on cpu for storage
+    return features_raw.half().cpu()
+
 def maskcut_tensor_method(img_tensor, num_objects=2, patch_size=14, dino_model=None):
     if dino_model is None:
         print("pass the dino model!")
@@ -263,13 +285,14 @@ def maskcut_tensor_method(img_tensor, num_objects=2, patch_size=14, dino_model=N
     
     #in order to return the interpolated 14x14x384 grid (this is patch_tokens)
     features_raw = patch_tokens #(1369, 384)
-    feats_2d = features_raw.reshape(patch_grid, patch_grid, 384).permute(2, 0, 1).unsqueeze(0)
-    dino_features_hires = F.interpolate(
-        feats_2d, 
-        size=(h_orig, w_orig), 
-        mode='bilinear', 
-        align_corners=False
-    ).squeeze(0) # shape now: [384, H, W]
+    grid_size = int(features_raw.shape[0]**0.5)
+    dino_feats_raw = features_raw.reshape(grid_size, grid_size, 384).permute(2, 0, 1)
+    # dino_features_hires = F.interpolate(
+    #     feats_2d, 
+    #     size=(h_orig, w_orig), 
+    #     mode='bilinear', 
+    #     align_corners=False
+    # ).squeeze(0) # shape now: [384, H, W]
     
     #keep track of what hasn't been picked yet
     available_nodes = np.ones(num_patches, dtype=bool)
@@ -330,7 +353,7 @@ def maskcut_tensor_method(img_tensor, num_objects=2, patch_size=14, dino_model=N
         full_binary_mask[valid_indices] = sub_binary_mask
         available_nodes = available_nodes & (~full_binary_mask)
 
-    return masks_hires, dino_features_hires
+    return masks_hires, dino_feats_raw
 
 
 def visualize_dino_heatmap(img_path, heatmap, save_dir):
