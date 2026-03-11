@@ -165,12 +165,19 @@ class UCFRep_train(Dataset):
             start_t = torch.randint(0, max_start, (1,)).item()
             k = self.k_gap
 
-        # anchor and positive slices
+        # anchor and positive slices [FROM SAME VIDEO!!!]
         anchor_slice = slice(start_t, start_t + self.clip_len)
         positive_slice = slice(start_t + k, start_t + k + self.clip_len)
 
         anchor_clip = self._get_stacked_input(v_path, anchor_slice)     #[t, 387, 224, 224]
         positive_clip = self._get_stacked_input(v_path, positive_slice) #[t, 387, 224, 224]
+        
+        #for negative 2 things can be done-
+        '''
+        1. within the frame/image, treat all pixels outside the mask as negative (this is from the generated output)
+        2. inside the batch, treat videos with a different vid_name as negatives. And then treat the predicted mask of this
+        clip from another video as negative.
+        '''
 
         return {
             "anchor": anchor_clip,
