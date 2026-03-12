@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from model import MaskGen, RepMask
+import os
 from data_utils import UCFRep_train #the custom dataset
 
 def train():
@@ -26,6 +27,13 @@ def train():
             
             #call model for both
             anchor_mask, _ = model(anchor)
+            with torch.no_grad():
+                m_mean = anchor_mask.mean().item()
+                m_max = anchor_mask.max().item()
+                m_min = anchor_mask.min().item()
+                
+                # Check if the mask is actually doing something
+                print(f"--- [Batch {batch_idx}] Mask Health: Mean={m_mean:.4f}, Max={m_max:.4f}, Min={m_min:.4f} ---")
             pos_mask, _ = model(positive)
             
     
@@ -75,6 +83,11 @@ def train():
             
             if batch_idx % 5 == 0:
                 print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {loss.item():.4f}")
-                
+        
+        os.makedirs("test_models", exist_ok=True)
+        checkpoint_path = os.path.join("test_models", f"mask_gen_epoch_{epoch}.pth")
+        torch.save(model.state_dict(), checkpoint_path)
+        print(f"Model saved to {checkpoint_path}")
+        
 if __name__ == "__main__":
     train()
