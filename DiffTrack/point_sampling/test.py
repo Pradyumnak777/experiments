@@ -11,7 +11,7 @@ from model import MaskGen
 from data_utils import mp4_to_frames, tensorize_vid, transform, preprocess
 
 def test_single_video(video_path, checkpoint_path):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.device_count() > 1 else "cuda" if torch.cuda.is_available() else "cpu")
     
     print("Loading feature extraction models...")
     depth_model = DepthAnything3.from_pretrained("depth-anything/da3-base").to(device)
@@ -101,7 +101,9 @@ def test_single_video(video_path, checkpoint_path):
 
 if __name__ == "__main__":
     # --- UPDATE THIS PATH ---
-    test_mp4_path = "UCF_Rep/val/v_BenchPress_g23_c01.mp4" 
+    # test_mp4_path = "UCF_Rep/val/v_TableTennisShot_g22_c01.mp4" 
+    test_mp4_path = "vids_mp4/swim.mp4" 
+
     weights_path = "test_models/mask_gen_epoch_0.pth"
     
     if os.path.exists(test_mp4_path) and os.path.exists(weights_path):

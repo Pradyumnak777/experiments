@@ -435,7 +435,7 @@ def visualize_maskcut_results(img_path, masks, save_dir):
     print(f"saved multi-object visualization to {save_path}")
 
 if __name__ == "__main__":
-    img_path = '/scratch/pbk5339/thesis/DiffTrack/videos/swim/frames_009.jpg'
+    img_path = 'videos/UCF_Rep/val/v_Kayaking_g23_c06/frames_000.jpg'
     # mask = dinov3_mask(img_path)
     # save_dir = "dinov2_masks_experiment"
     # visualize_dino_heatmap(img_path, mask, save_dir)

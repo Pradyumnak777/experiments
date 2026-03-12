@@ -4,7 +4,24 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from model import MaskGen, RepMask
 import os
+import random
+import numpy as np
 from data_utils import UCFRep_train #the custom dataset
+SEED = 42
+
+def seed_everything(seed: int = SEED) -> None:
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    # torch.use_deterministic_algorithms(True)
+
+seed_everything()
 
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -80,7 +97,6 @@ def train():
             
             loss.backward()
             optimizer.step()
-            
             if batch_idx % 5 == 0:
                 print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {loss.item():.4f}")
         

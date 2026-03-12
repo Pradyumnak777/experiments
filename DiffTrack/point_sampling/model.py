@@ -5,7 +5,15 @@ import torch.nn.functional as F
 
 class RepMask(nn.Module):
     def __init__(self, embed_dim = 128): #here val_dim is flow(2) + depth(1) 
-        super(RepMask, self).__init__()
+        super(RepMask, self).__init__()        
+        
+        #conving before cross attention
+        self.spatial_conv = nn.Sequential(
+            nn.Conv3d(in_channels=387, out_channels=64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv3d(in_channels=64, out_channels=1, kernel_size=1),
+            nn.Sigmoid()
+        )
         
         self.proj_q = nn.Linear(384, embed_dim)  #this is dino
         self.proj_kv = nn.Linear(3, embed_dim) # (flow + depth)
@@ -21,7 +29,14 @@ class RepMask(nn.Module):
     def forward(self, x):
         # x input: [B(batch), 387(384+2+1), T, H, W]
         b, c, t, h, w = x.shape
-        summary = torch.mean(x, dim=(2, 3, 4)) #HOW EFFECTIVE IS THIS??(check online..)
+        
+        spatial_heatmap = self.spatial_conv(x) #[b, 1, t, h, w]
+        weighted_x = x * spatial_heatmap
+        
+        numerator = torch.sum(weighted_x, dim=(2, 3, 4))
+        denominator = torch.sum(spatial_heatmap, dim=(2, 3, 4)) + 1e-8
+        summary = numerator / denominator
+        # summary = torch.mean(x, dim=(2, 3, 4)) #HOW EFFECTIVE IS THIS??(check online..)
         dino_part = summary[:, :384]
         phys_part = summary[:, 384:]
         
