@@ -69,7 +69,10 @@ def preprocess(vid_tensor, raw_frames, name, dino_model, raft_model, depth_model
     t_sparse = len(strided_raw_frames)
 
     print(f"  # {vid_name}: extracting raw dino features (stride={stride})...")
-    dino_transform = v2.Resize((224, 224), antialias=True)
+    dino_transform = v2.Compose([
+        v2.Resize((518, 518), antialias=True),
+        v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
     
     for i in range(t_sparse):
         #normalize 
@@ -184,6 +187,109 @@ class UCFRep_train(Dataset):
             "positive": positive_clip,
             "vid_name": vid_name
         }
+        
+import torch
+from torch.utils.data import Dataset
+import os
+import cv2
+import torch.nn.functional as F
+
+class UCFRep_Finetune_Dataset(Dataset):
+    def __init__(self, mp4_dir, pt_dir, clip_len=8, k_gap=5):
+        '''
+        mp4_dir: path to 'UCF_Rep/train' (the raw videos)
+        pt_dir: path to 'ucfrep_intermediate_dataset' (where flow/depth are)
+        '''
+        self.mp4_dir = mp4_dir
+        self.pt_dir = pt_dir
+        
+        self.video_names = [f for f in os.listdir(pt_dir) if os.path.isdir(os.path.join(pt_dir, f))]
+        self.clip_len = clip_len
+        self.k_gap = k_gap
+        
+        self.norm_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        self.norm_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+    def __len__(self):
+        return len(self.video_names)
+
+    def _extract_pixel_clip(self, video_path, idx_range):
+        frames = []
+        cap = cv2.VideoCapture(video_path)
+        
+        #jump to the start frame
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx_range.start)
+        
+        total_frames = idx_range.stop - idx_range.start
+        expected_len = total_frames // idx_range.step
+        
+        for i in range(total_frames):
+            ret, frame = cap.read()
+            #if opencv hits the end of the file early, stop reading
+            if not ret: 
+                break
+                
+            #only grab frames that match our stride
+            if i % idx_range.step == 0:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = cv2.resize(frame, (224, 224))
+                t_frame = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+                t_frame = (t_frame - self.norm_mean) / self.norm_std
+                frames.append(t_frame)
+        
+        cap.release()
+        
+        #the safety net for opencv mp4 quirks
+        #if it read absolutely nothing (bad seek), fill with zeros
+        if len(frames) == 0:
+            return torch.zeros((expected_len, 3, 224, 224))
+            
+        #if it read some frames but hit EOF before getting all 8, duplicate the last frame
+        while len(frames) < expected_len:
+            frames.append(frames[-1].clone())
+            
+        return torch.stack(frames) #now guaranteed to return [8, 3, 224, 224]
+
+    def __getitem__(self, idx):
+        v_name = self.video_names[idx]
+        pt_path = os.path.join(self.pt_dir, v_name)
+        mp4_path = os.path.join(self.mp4_dir, v_name + ".mp4")
+
+        flow_meta = torch.load(os.path.join(pt_path, "flow.pt"), weights_only=True)
+        t_total = flow_meta.shape[0]
+
+        # Calculate temporal slices
+        max_start = t_total - self.clip_len - self.k_gap - 1
+        if max_start <= 0:
+            start_t, k = 0, 0
+        else:
+            start_t = torch.randint(0, max_start, (1,)).item()
+            k = self.k_gap
+
+        anchor_idx = slice(start_t, start_t + self.clip_len)
+        pos_idx = slice(start_t + k, start_t + k + self.clip_len)
+
+        
+        #multiply start_t by 2 because .pt files were created with stride=2
+        anchor_pixels = self._extract_pixel_clip(mp4_path, slice(start_t*2, (start_t + self.clip_len)*2, 2))
+        pos_pixels = self._extract_pixel_clip(mp4_path, slice((start_t+k)*2, (start_t+k+self.clip_len)*2, 2))
+
+        #get flow and depth
+        anchor_flow = torch.load(os.path.join(pt_path, "flow.pt"), weights_only=True)[anchor_idx].float()
+        anchor_depth = torch.load(os.path.join(pt_path, "depth.pt"), weights_only=True)[anchor_idx].float()
+        
+        pos_flow = torch.load(os.path.join(pt_path, "flow.pt"), weights_only=True)[pos_idx].float()
+        pos_depth = torch.load(os.path.join(pt_path, "depth.pt"), weights_only=True)[pos_idx].float()
+
+        return {
+            "anchor_pixels": anchor_pixels, # [T, 3, 224, 224] -> Into DINO
+            "pos_pixels": pos_pixels,       # [T, 3, 224, 224] -> Into DINO
+            "anchor_flow": anchor_flow,     # [T, 2, 224, 224] -> Mask Guidance
+            "anchor_depth": anchor_depth,   # [T, 1, 224, 224] -> Scale Guidance
+            "pos_flow": pos_flow,
+            "pos_depth": pos_depth,
+            "vid_name": v_name
+        }
     
 if __name__ == "__main__":
     dir = "UCF_Rep/train"
@@ -195,7 +301,7 @@ if __name__ == "__main__":
     depth_model = depth_model.to(device=device)
     
     #dino model
-    model_name = 'facebook/dinov2-small'
+    model_name = 'facebook/dinov2-base'
     dino_model = AutoModel.from_pretrained(model_name, output_attentions=True).cuda()
     dino_model.eval()
     

@@ -8,14 +8,14 @@ class RepMask(nn.Module):
         super(RepMask, self).__init__()        
         
         #conving before cross attention
-        self.spatial_conv = nn.Sequential(
-            nn.Conv3d(in_channels=387, out_channels=64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv3d(in_channels=64, out_channels=1, kernel_size=1),
-            nn.Sigmoid()
-        )
+        # self.spatial_conv = nn.Sequential(
+        #     nn.Conv3d(in_channels=387, out_channels=64, kernel_size=3, padding=1),
+        #     nn.ReLU(),
+        #     nn.Conv3d(in_channels=64, out_channels=1, kernel_size=1),
+        #     nn.Sigmoid()
+        # )
         
-        self.proj_q = nn.Linear(384, embed_dim)  #this is dino
+        self.proj_q = nn.Linear(768, embed_dim)  #this is dino
         self.proj_kv = nn.Linear(3, embed_dim) # (flow + depth)
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=embed_dim, 
@@ -23,30 +23,30 @@ class RepMask(nn.Module):
             batch_first=True
         )
         
-        self.proj_out = nn.Linear(embed_dim, 387) #output from attn_layer is embed_dim dimension, this is for projecting back
+        self.proj_out = nn.Linear(embed_dim, 771) #output from attn_layer is embed_dim dimension, this is for projecting back
         
         
     def forward(self, x):
-        # x input: [B(batch), 387(384+2+1), T, H, W]
+        # x input: input: [B, 771, T, H, W]
         b, c, t, h, w = x.shape
         
-        spatial_heatmap = self.spatial_conv(x) #[b, 1, t, h, w]
-        weighted_x = x * spatial_heatmap
+        # spatial_heatmap = self.spatial_conv(x) #[b, 1, t, h, w]
+        # weighted_x = x * spatial_heatmap
         
-        numerator = torch.sum(weighted_x, dim=(2, 3, 4))
-        denominator = torch.sum(spatial_heatmap, dim=(2, 3, 4)) + 1e-8
-        summary = numerator / denominator
-        # summary = torch.mean(x, dim=(2, 3, 4)) #HOW EFFECTIVE IS THIS??(check online..)
-        dino_part = summary[:, :384]
-        phys_part = summary[:, 384:]
+        # numerator = torch.sum(weighted_x, dim=(2, 3, 4))
+        # denominator = torch.sum(spatial_heatmap, dim=(2, 3, 4)) + 1e-8
+        # summary = numerator / denominator
+        summary = torch.mean(x, dim=(2, 3, 4)) #HOW EFFECTIVE IS THIS??(check online..)
+        dino_part = summary[:, :768]
+        phys_part = summary[:, 768:]
         
-        Q = self.proj_q(dino_part).unsqueeze(1) #[B, 1, 384] -> [B, 1, 128]
+        Q = self.proj_q(dino_part).unsqueeze(1) #[B, 1, 768] -> [B, 1, 128]
         KV = self.proj_kv(phys_part).unsqueeze(1) #[B, 1, 3] -> [B 1, 128]
         
         attn_out, weights = self.cross_attn(query=Q, key=KV, value=KV)
         
-        channel_weights = self.proj_out(attn_out.squeeze(1)) #[][B, 387]
-        channel_weights = torch.sigmoid(channel_weights).view(b, 387, 1, 1, 1)
+        channel_weights = self.proj_out(attn_out.squeeze(1)) #[][B, 771]
+        channel_weights = torch.sigmoid(channel_weights).view(b, 771, 1, 1, 1)
         
         return x * channel_weights, weights
         
@@ -57,7 +57,7 @@ class MaskGen(nn.Module):
         
         self.attention_block = RepMask(embed_dim=128)
         
-        self.temporal_conv = nn.Conv3d(in_channels=387, out_channels=64, kernel_size=(8, 1, 1)) #collapsing the clip of 387 channels
+        self.temporal_conv = nn.Conv3d(in_channels=771, out_channels=64, kernel_size=(8, 1, 1)) #collapsing the clip of 771 channels
         self.dec_conv1 = nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, padding=1)
         self.final_conv = nn.Conv2d(in_channels=32, out_channels=1, kernel_size=1) #this is the final mask
         

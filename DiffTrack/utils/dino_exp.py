@@ -142,12 +142,26 @@ def maskcut_method(img_path, num_objects=2, patch_size=14, dino_model=None):
         T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
     ])
     img_tensor = transform(img).unsqueeze(0).to(device)
+    
     with torch.no_grad():
         outputs = dino_model(img_tensor, output_attentions=True)
         patch_tokens = outputs.last_hidden_state[0, 1:, :] 
+        '''
+        below for dinov2
+        '''
         last_attn = outputs.attentions[-1] 
         cls_attn = last_attn[0, :, 0, 1:].mean(dim=0)
         cls_weight = cls_attn.cpu().numpy()
+        # '''
+        # below for dinov3
+        # '''
+        # #DINOv3 tokens are [CLS(1), REG(4), PATCHES(N)]
+        # #skip first 5 tokens to get patch tokens
+        # patch_tokens = outputs.last_hidden_state[0, 5:, :]
+        
+        # last_attn = outputs.attentions[-1] 
+        # cls_attn = last_attn[0, :, 0, 5:].mean(dim=0)
+        # cls_weight = cls_attn.cpu().numpy()
         
     features = patch_tokens.cpu().numpy()
     
@@ -221,26 +235,25 @@ def maskcut_method(img_path, num_objects=2, patch_size=14, dino_model=None):
     return masks_hires
 
 def get_dino_features(img_tensor, dino_model):
-    #img_tensor: [1, 3, 518, 518] normalized
-    #dino_model: hf dinov2 model
-    
     device = next(dino_model.parameters()).device
     img_tensor = img_tensor.to(device)
     
     with torch.no_grad():
-        #extracting last hidden state
         outputs = dino_model(img_tensor)
-        #shape is [1, 1370, 384] -> 1 cls token + 1369 patch tokens
+        # patch_tokens shape: [1, num_patches, embed_dim]
         patch_tokens = outputs.last_hidden_state[0, 1:, :] 
         
-        #calc grid size (sqrt of 1369 is 37)
-        grid_size = int(patch_tokens.shape[0]**0.5)
+        num_patches = patch_tokens.shape[0]
+        embed_dim = patch_tokens.shape[1] #to detect 384, 768, or 1024 dynamically
         
-        #reshape to [384, 37, 37]
-        features_raw = patch_tokens.reshape(grid_size, grid_size, 384).permute(2, 0, 1)
+        # Calculate grid size (sqrt of patches)
+        grid_size = int(num_patches**0.5)
         
-    #return as half precision on cpu for storage
-    return features_raw.half().cpu()
+        # Reshape using the dynamic embed_dim
+        features_raw = patch_tokens.reshape(grid_size, grid_size, embed_dim).permute(2, 0, 1)
+        features_16x16 = F.interpolate(features_raw.unsqueeze(0), size=(16, 16), mode='bilinear')
+    
+    return features_16x16.squeeze(0).half().cpu()
 
 def maskcut_tensor_method(img_tensor, num_objects=2, patch_size=14, dino_model=None):
     if dino_model is None:
@@ -435,7 +448,8 @@ def visualize_maskcut_results(img_path, masks, save_dir):
     print(f"saved multi-object visualization to {save_path}")
 
 if __name__ == "__main__":
-    img_path = 'videos/UCF_Rep/val/v_Kayaking_g23_c06/frames_000.jpg'
+    img_path = 'videos/swim/frames_001.jpg'
+    # img_path = 'videos/countix/-0HwkO7TRmc_35.138472_39.943277/frames_000.jpg'
     # mask = dinov3_mask(img_path)
     # save_dir = "dinov2_masks_experiment"
     # visualize_dino_heatmap(img_path, mask, save_dir)
@@ -449,7 +463,7 @@ if __name__ == "__main__":
     # dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14').cuda()
     # # dino_model = AutoModel.from_pretrained('facebook/dinov3-vitb16-pretrain-lvd1689m').cuda()
     # dino_model.eval()
-    model_name = 'facebook/dinov2-small'
+    model_name = 'facebook/dinov2-base'
     dino_model = AutoModel.from_pretrained(model_name, output_attentions=True).cuda()
     dino_model.eval()
 

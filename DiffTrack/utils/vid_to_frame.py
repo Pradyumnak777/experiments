@@ -40,5 +40,6 @@ def mp4_to_frames(video_name):
 
 
 if __name__ == "__main__":
-	video_name = "UCF_Rep/val/v_Kayaking_g23_c06.mp4"  
+	# video_name = "UCF_Rep/val/v_Rowing_g24_c01.mp4"  
+	video_name = "countix/-0HwkO7TRmc_35.138472_39.943277.mp4"  
 	mp4_to_frames(video_name)

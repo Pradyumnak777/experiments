@@ -1,4 +1,5 @@
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "8"
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
@@ -7,15 +8,15 @@ from transformers import AutoModel
 from torchvision.models.optical_flow import raft_large
 
 from depth_anything_3.api import DepthAnything3
-from model import MaskGen
+from model_2 import MaskGen
 from data_utils import mp4_to_frames, tensorize_vid, transform, preprocess
 
 def test_single_video(video_path, checkpoint_path):
-    device = torch.device("cuda:1" if torch.cuda.device_count() > 1 else "cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:4" if torch.cuda.device_count() > 1 else "cuda" if torch.cuda.is_available() else "cpu")
     
     print("Loading feature extraction models...")
     depth_model = DepthAnything3.from_pretrained("depth-anything/da3-base").to(device)
-    dino_model = AutoModel.from_pretrained('facebook/dinov2-small', output_attentions=True).to(device).eval()
+    dino_model = AutoModel.from_pretrained('facebook/dinov2-base', output_attentions=True).to(device).eval()
     raft_model = raft_large(pretrained=True, progress=False).to(device).eval()
 
     print(f"\nProcessing test video: {video_path}")
@@ -101,10 +102,12 @@ def test_single_video(video_path, checkpoint_path):
 
 if __name__ == "__main__":
     # --- UPDATE THIS PATH ---
-    # test_mp4_path = "UCF_Rep/val/v_TableTennisShot_g22_c01.mp4" 
-    test_mp4_path = "vids_mp4/swim.mp4" 
+    test_mp4_path = "UCF_Rep/val/v_SoccerJuggling_g22_c03.mp4" 
+    # test_mp4_path = "vids_mp4/swim_2.mp4" 
 
-    weights_path = "test_models/mask_gen_epoch_0.pth"
+    # weights_path = "test_models/curr_use_dinov2_epoch2.pth"
+    weights_path = "test_models/mask_gen_epoch_2.pth"
+
     
     if os.path.exists(test_mp4_path) and os.path.exists(weights_path):
         test_single_video(test_mp4_path, weights_path)
