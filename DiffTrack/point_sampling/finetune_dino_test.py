@@ -5,10 +5,11 @@ import numpy as np
 import os
 from model_finetune import DINOv2_LoRA
 import matplotlib.pyplot as plt
+# from sklearn.cluster import KMeans
 
 checkpoint_path = "test_models/lora_dino_epoch_1.pth" 
-# video_path = "UCF_Rep/val/v_ShavingBeard_g23_c06.mp4" #pick a specific video to test
-video_path = "vids_mp4/swim.mp4" #pick a specific video to test 
+# video_path = "UCF_Rep/val/v_CuttingInKitchen_g24_c01.mp4" #pick a specific video to test
+video_path = "vids_mp4/74xHYgPwErQ_4.0_8.72.mp4" #pick a specific video to test 
 # video_path = "countix/-dxBq0WzYRU_35.42309_37.71705.mp4"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -25,7 +26,7 @@ def visualize():
     norm_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(device)
     norm_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(device)
 
-    for _ in range(8): #just look at the first 8 frames
+    for _ in range(1): #just look at the first frame
         ret, frame = cap.read()
         if not ret: break
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -95,30 +96,28 @@ def visualize():
     #     # Rename back to sim_map so your plotting code works without changes
     #     sim_map = pc1
         
-    #4. plotting
-    fig, axes = plt.subplots(2, 4, figsize=(22, 10))
-    axes = axes.flatten()
-    
-    im = None 
-    for i in range(min(8, len(raw_frames))):
-        #upscale 16x16 similarity map back to 224x224 for viewing
-        heatmap = F.interpolate(
-            sim_map[0, i].view(1, 1, 16, 16), 
-            size=(224, 224), 
-            mode='bilinear'
-        ).squeeze().cpu().numpy()
-        
-        #normalize heatmap for visualization
-        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
-        
-        #overlay logic
-        axes[i].imshow(raw_frames[i])
-        im = axes[i].imshow(heatmap, cmap='jet', alpha=0.5) #alpha 0.5 let's us see the actor underneath
-        axes[i].set_title(f"Frame {i}")
-        axes[i].axis('off')
+    #4. plotting (first frame only)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-    cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.8, pad=0.02)
-    cbar.set_label('similarity to actor vector', rotation=270, labelpad=15)
+    heatmap = F.interpolate(
+        sim_map[0, 0].view(1, 1, 16, 16),
+        size=(224, 224),
+        mode='bilinear'
+    ).squeeze().cpu().numpy()
+
+    heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+
+    axes[0].imshow(raw_frames[0])
+    axes[0].set_title("Frame 0 (Original)")
+    axes[0].axis('off')
+
+    axes[1].imshow(raw_frames[0])
+    im = axes[1].imshow(heatmap, cmap='jet', alpha=0.5)
+    axes[1].set_title("Frame 0 (Mask Overlay)")
+    axes[1].axis('off')
+
+    # cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.8, pad=0.02)
+    # cbar.set_label('similarity to actor vector', rotation=270, labelpad=15)
 
     plt.tight_layout()
     os.makedirs("point_sampling/finetuned_test/", exist_ok=True)
@@ -129,5 +128,70 @@ def visualize():
     plt.savefig(save_name, bbox_inches='tight')
     print(f"saved visualization to {save_name}")
 
+
+# def visualize_knn():
+#     # 1. Standard init and load
+#     model = DINOv2_LoRA().to(device)
+#     state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
+#     model.load_state_dict(state_dict)
+#     model.eval()
+
+#     cap = cv2.VideoCapture(video_path)
+#     ret, frame = cap.read()
+#     if not ret: return
+#     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+#     raw_frame = cv2.resize(frame_rgb, (224, 224))
+    
+#     norm_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(device)
+#     norm_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(device)
+#     t_frame = (torch.from_numpy(raw_frame).permute(2, 0, 1).float().to(device) / 255.0 - norm_mean) / norm_std
+#     cap.release()
+
+#     # 2. Run Inference
+#     with torch.no_grad():
+#         # Input shape [1, 1, 3, 224, 224]
+#         features = model(t_frame.unsqueeze(0).unsqueeze(0)) 
+#         # features shape: [1, 1, 768, 16, 16]
+        
+#         # Flatten patches into a list of vectors: [256, 768]
+#         feat_flat = features[0, 0].permute(1, 2, 0).reshape(-1, 768).cpu().numpy()
+
+#     # 3. K-Means Clustering
+#     # We look for 2 clusters: Background and Foreground
+#     n_clusters = 2
+#     kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=42)
+#     cluster_labels = kmeans.fit_predict(feat_flat) # Result is [256] labels (0 or 1)
+    
+#     # Reshape labels back to 16x16 grid
+#     cluster_map = cluster_labels.reshape(16, 16).astype(np.float32)
+    
+#     # We check the top-left corner label. If it's 1, it means cluster 1 is background.
+#     # We want Background to be 0 and Actor to be 1.
+#     if cluster_map[0, 0] == 1:
+#         cluster_map = 1 - cluster_map
+
+#     # 4. Upscale for visualization
+#     cluster_map_tensor = torch.from_numpy(cluster_map).view(1, 1, 16, 16)
+#     upscaled_mask = F.interpolate(cluster_map_tensor, size=(224, 224), mode='nearest').squeeze().numpy()
+
+#     # 5. Plotting
+#     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+#     axes[0].imshow(raw_frame)
+#     axes[0].set_title("Original Frame")
+#     axes[0].axis('off')
+
+#     axes[1].imshow(raw_frame)
+#     # Using 'jet' map, cluster 0 will be blue, cluster 1 will be red
+#     axes[1].imshow(upscaled_mask, cmap='jet', alpha=0.5)
+#     axes[1].set_title("K-Means Semantic Segments")
+#     axes[1].axis('off')
+
+#     plt.tight_layout()
+#     video_name = os.path.splitext(os.path.basename(video_path))[0]
+#     save_name = f"point_sampling/finetuned_test/{video_name}_kmeans_seg.png"
+#     plt.savefig(save_name, bbox_inches='tight')
+#     print(f"Saved K-Means segmentation to {save_name}")
+
 if __name__ == "__main__":
-    visualize()
+    # visualize()
+    visualize_knn()

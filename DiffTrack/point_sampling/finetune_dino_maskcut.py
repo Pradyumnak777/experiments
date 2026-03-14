@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 checkpoint_path = "test_models/lora_dino_epoch_0.pth" 
 # video_path = "UCF_Rep/val/v_PlayingViolin_g22_c02.mp4" #pick a specific video to test
-video_path = "vids_mp4/swim_3.mp4" #pick a specific video to test
+video_path = "vids_mp4/74xHYgPwErQ_4.0_8.72.mp4" #pick a specific video to test
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def get_maskcut(frame_features):
@@ -44,13 +44,13 @@ def get_maskcut(frame_features):
     #reshape back to spatial grid
     mask = eigenvector.view(h, w)
     
-    #4. auto-inversion logic
-    #we assume the 4 corners of the frame are background (gym floor, pool, room walls)
-    #if the eigenvector assigned positive values to the corners, it means the background is 'hot'.
-    #so we flip it, guaranteeing the actor becomes the positive peak!
-    corners_mean = (mask[0, 0] + mask[0, -1] + mask[-1, 0] + mask[-1, -1]) / 4.0
-    if corners_mean > 0:
-        mask = -mask
+    # #4. auto-inversion logic
+    # #we assume the 4 corners of the frame are background (gym floor, pool, room walls)
+    # #if the eigenvector assigned positive values to the corners, it means the background is 'hot'.
+    # #so we flip it, guaranteeing the actor becomes the positive peak!
+    # corners_mean = (mask[0, 0] + mask[0, -1] + mask[-1, 0] + mask[-1, -1]) / 4.0
+    # if corners_mean > 0:
+    #     mask = -mask
         
     return mask
 
