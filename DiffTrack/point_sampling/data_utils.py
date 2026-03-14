@@ -239,7 +239,6 @@ class UCFRep_Finetune_Dataset(Dataset):
         
         cap.release()
         
-        #the safety net for opencv mp4 quirks
         #if it read absolutely nothing (bad seek), fill with zeros
         if len(frames) == 0:
             return torch.zeros((expected_len, 3, 224, 224))
@@ -251,23 +250,25 @@ class UCFRep_Finetune_Dataset(Dataset):
         return torch.stack(frames) #now guaranteed to return [8, 3, 224, 224]
 
     def __getitem__(self, idx):
+        #fetch the related files for this video file (video, flow.pt, depth.pt)
         v_name = self.video_names[idx]
         pt_path = os.path.join(self.pt_dir, v_name)
         mp4_path = os.path.join(self.mp4_dir, v_name + ".mp4")
 
+        #get total frames
         flow_meta = torch.load(os.path.join(pt_path, "flow.pt"), weights_only=True)
         t_total = flow_meta.shape[0]
 
         # Calculate temporal slices
-        max_start = t_total - self.clip_len - self.k_gap - 1
-        if max_start <= 0:
+        max_start = t_total - self.clip_len - self.k_gap - 1 
+        if max_start <= 0: #edge case, shouldnt happen..
             start_t, k = 0, 0
         else:
-            start_t = torch.randint(0, max_start, (1,)).item()
-            k = self.k_gap
+            start_t = torch.randint(0, max_start, (1,)).item() #chose csome random stanrting index
+            k = self.k_gap # k is how far ahead to look in number of frames to find the poitive pair
 
         anchor_idx = slice(start_t, start_t + self.clip_len)
-        pos_idx = slice(start_t + k, start_t + k + self.clip_len)
+        pos_idx = slice(start_t + k, start_t + k + self.clip_len) #positive clip is curr_frame + k
 
         
         #multiply start_t by 2 because .pt files were created with stride=2

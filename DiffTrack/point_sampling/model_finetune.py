@@ -29,11 +29,11 @@ class DINOv2_LoRA(nn.Module):
         b, t, c, h, w = x.shape
         
         #squash b and t to process frames through dino in one go
-        x = x.view(b * t, c, h, w)
+        x = x.view(b * t, c, h, w) #ts is now [32, 3, 224, 224]
         
         #run through lora-wrapped dino
         outputs = self.model(x)
-        features = outputs.last_hidden_state #[b*t, 257, 768]
+        features = outputs.last_hidden_state #[b*t, 257, 768] -> [32, 257, 768]; 256 patch tokens + [cls] token
         
         #grab patch tokens (ignore cls token at index 0)
         #reshape back to [b*t, 768, 16, 16] for spatial masking later
@@ -50,13 +50,13 @@ def get_robust_mask(flow, depth, threshold_multiplier=1.2):
     mag = torch.norm(flow, dim=2, keepdim=True) #[b, t, 1, h, w]
     
     #normalize depth to 0-1 range
-    depth_norm = depth / (depth.max() + 1e-8)
+    depth_norm = depth / (depth.max() + 1e-8) #higher is closer, lower is farther
     
     combined_score = mag * depth_norm
     
     #instead of a hard cutoff, we only take pixels 'more active' than the average
     #this saves us if the whole frame is panning
-    mean_score = combined_score.mean(dim=(3, 4), keepdim=True)
+    mean_score = combined_score.mean(dim=(3, 4), keepdim=True) #[4, 8, 1, 1, 1]
     binary_mask = (combined_score > (mean_score * threshold_multiplier)).float()
     
     return binary_mask

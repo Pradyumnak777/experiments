@@ -96,7 +96,7 @@ def train():
                     mode='nearest'
                 ).view(B, T, 1, 16, 16)
 
-                #weighted averaging: pool only the actor pixels
+                #weighted averaging
                 #we sum across time (dim=1) and space (dim=3,4) to get one single vector per video
                 anchor_vec = torch.sum(anchor_dino * anchor_mask, dim=(1, 3, 4)) / (torch.sum(anchor_mask, dim=(1, 3, 4)) + 1e-8)
                 pos_vec = torch.sum(pos_dino * pos_mask, dim=(1, 3, 4)) / (torch.sum(pos_mask, dim=(1, 3, 4)) + 1e-8)
@@ -104,8 +104,11 @@ def train():
                 anchor_vec = F.normalize(anchor_vec, dim=1) #[b, 768]
                 pos_vec = F.normalize(pos_vec, dim=1) #[b, 768]
                 
+                '''
+                contrastive learning loss! - infoNCE
+                '''
                 #infonce logits (temporal positives/negatives)
-                temporal_logits = torch.matmul(anchor_vec, pos_vec.T) / temperature
+                temporal_logits = torch.matmul(anchor_vec, pos_vec.T) / temperature #diagonals should tend to 1(positives)
                 
                 #spatial negatives (background of the same videos)
                 anchor_bg_mask = 1.0 - anchor_mask
@@ -116,6 +119,8 @@ def train():
                 pos_bg_vec = F.normalize(torch.sum(pos_dino * pos_bg_mask, dim=(1, 3, 4)) / (torch.sum(pos_bg_mask, dim=(1, 3, 4)) + 1e-8), dim=1)
                 pos_spatial_logits = torch.sum(anchor_vec * pos_bg_vec, dim=1, keepdim=True) / temperature
 
+                #dot prod b/w bg_vec and vec s hould be very low..
+                
                 #combine and calculate loss
                 logits = torch.cat([temporal_logits, anchor_spatial_logits, pos_spatial_logits], dim=1)
                 labels = torch.arange(B).to(device)

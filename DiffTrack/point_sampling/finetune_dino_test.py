@@ -6,21 +6,19 @@ import os
 from model_finetune import DINOv2_LoRA
 import matplotlib.pyplot as plt
 
-checkpoint_path = "test_models/lora_dino_epoch_0.pth" 
-# video_path = "UCF_Rep/val/v_Rowing_g21_c03.mp4" #pick a specific video to test
-video_path = "vids_mp4/9wyq-dzy2TI_22.0_26.666667.mp4" #pick a specific video to test 
+checkpoint_path = "test_models/lora_dino_epoch_1.pth" 
+# video_path = "UCF_Rep/val/v_ShavingBeard_g23_c06.mp4" #pick a specific video to test
+video_path = "vids_mp4/swim.mp4" #pick a specific video to test 
 # video_path = "countix/-dxBq0WzYRU_35.42309_37.71705.mp4"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def visualize():
-    #1. init model and load lora weights
     model = DINOv2_LoRA().to(device)
     state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
     model.eval()
     print(f"loaded weights from {checkpoint_path}")
 
-    #2. grab a few frames from the video
     cap = cv2.VideoCapture(video_path)
     frames = []
     raw_frames = []
@@ -42,7 +40,6 @@ def visualize():
     #stack and move to device [1, T, 3, 224, 224]
     input_tensor = torch.stack(frames).unsqueeze(0).to(device)
 
-    #3. run inference
     with torch.no_grad():
         #features shape: [1, T, 768, 16, 16]
         features = model(input_tensor)
@@ -52,6 +49,51 @@ def visualize():
         #then see which patches look most like it
         avg_feature = features.mean(dim=(1, 3, 4), keepdim=True) # [1, 1, 768, 1, 1]
         sim_map = torch.cosine_similarity(features, avg_feature, dim=2) # [1, T, 16, 16]
+
+        # '''
+        # alt method
+        # '''
+        # corners = torch.stack([
+        #     features[:, :, :, 0, 0],   # Top-left
+        #     features[:, :, :, 0, -1],  # Top-right
+        #     features[:, :, :, -1, 0],  # Bottom-left
+        #     features[:, :, :, -1, -1]  # Bottom-right
+        # ], dim=-1) # Shape: [1, T, 768, 4]
+
+        # # Average ONLY these corner patches to get a 100% pure "Background Vector"
+        # pure_bg_feature = corners.mean(dim=(1, 3), keepdim=True).unsqueeze(-1) # [1, 1, 768, 1, 1]
+        
+        # # Background will now perfectly match (Red). Actor will heavily mismatch (Deep Blue).
+        # sim_map = torch.cosine_similarity(features, pure_bg_feature, dim=2)
+    
+    # with torch.no_grad():
+    #     features = model(input_tensor) # [1, T, 768, 16, 16]
+    #     _, T, C, H, W = features.shape
+        
+    #     # 1. Flatten all patches across space and time into a 2D matrix
+    #     # Shape becomes [T * H * W, 768] (e.g., [2048, 768])
+    #     features_flat = features.view(T, C, H * W).permute(0, 2, 1).reshape(T * H * W, C)
+        
+    #     # 2. Mean-center the features (required for PCA)
+    #     features_flat = features_flat - features_flat.mean(dim=0, keepdim=True)
+        
+    #     # 3. Run PCA to find the top 3 principal components
+    #     # U contains the projected scores for each patch
+    #     U, S, V = torch.pca_lowrank(features_flat, q=3)
+        
+    #     # 4. Grab the First Principal Component (PC1)
+    #     # PC1 represents the axis of greatest variance (Foreground vs Background)
+    #     pc1 = U[:, 0].view(1, T, H, W)
+        
+    #     # 5. Auto-Invert logic
+    #     # PCA directions are arbitrary (+ or -). We assume corners are background.
+    #     # If the corners have a positive score, we flip the sign so the actor is positive.
+    #     corners_mean = (pc1[0, 0, 0, 0] + pc1[0, 0, 0, -1] + pc1[0, 0, -1, 0] + pc1[0, 0, -1, -1]) / 4.0
+    #     if corners_mean > 0:
+    #         pc1 = -pc1
+            
+    #     # Rename back to sim_map so your plotting code works without changes
+    #     sim_map = pc1
         
     #4. plotting
     fig, axes = plt.subplots(2, 4, figsize=(22, 10))
