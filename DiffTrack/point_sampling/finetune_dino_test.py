@@ -7,9 +7,9 @@ from model_finetune import DINOv2_LoRA
 import matplotlib.pyplot as plt
 
 checkpoint_path = "test_models/lora_dino_epoch_0.pth" 
-video_path = "UCF_Rep/val/v_Rowing_g21_c03.mp4" #pick a specific video to test
-# video_path = "vids_mp4/swim_3.mp4" #pick a specific video to test 
-video_path = "countix/-dxBq0WzYRU_35.42309_37.71705.mp4"
+# video_path = "UCF_Rep/val/v_Rowing_g21_c03.mp4" #pick a specific video to test
+video_path = "vids_mp4/9wyq-dzy2TI_22.0_26.666667.mp4" #pick a specific video to test 
+# video_path = "countix/-dxBq0WzYRU_35.42309_37.71705.mp4"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def visualize():

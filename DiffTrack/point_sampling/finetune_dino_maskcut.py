@@ -7,8 +7,8 @@ from model_finetune import DINOv2_LoRA
 import matplotlib.pyplot as plt
 
 checkpoint_path = "test_models/lora_dino_epoch_0.pth" 
-video_path = "UCF_Rep/val/v_PlayingViolin_g22_c02.mp4" #pick a specific video to test
-# video_path = "vids_mp4/swim_3.mp4" #pick a specific video to test
+# video_path = "UCF_Rep/val/v_PlayingViolin_g22_c02.mp4" #pick a specific video to test
+video_path = "vids_mp4/swim_3.mp4" #pick a specific video to test
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def get_maskcut(frame_features):
