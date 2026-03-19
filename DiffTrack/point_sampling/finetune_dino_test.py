@@ -8,9 +8,9 @@ import matplotlib.pyplot as plt
 from transformers import AutoModel
 # from sklearn.cluster import KMeans
 
-checkpoint_path = "test_models/new_lora_dino_epoch_49.pth" 
-video_path = "UCF_Rep/val/v_CuttingInKitchen_g21_c01.mp4" #pick a specific video to test
-# video_path = "vids_mp4/benchpress.mp4" #pick a specific video to test 
+checkpoint_path = "test_models/new3d_lora_dino_epoch_99.pth" 
+video_path = "UCF_Rep/val/v_Biking_g21_c01.mp4" #pick a specific video to test
+# video_path = "vids_mp4/swim_3.mp4" #pick a specific video to test 
 # video_path = "countix/-dxBq0WzYRU_35.42309_37.71705.mp4"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -27,7 +27,7 @@ def visualize():
     norm_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(device)
     norm_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(device)
 
-    for _ in range(1): #just look at the first frame
+    for _ in range(2): #just look at the first frame
         ret, frame = cap.read()
         if not ret: break
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -143,7 +143,7 @@ def visualize_plain():
     norm_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(device)
     norm_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(device)
 
-    for _ in range(1): #just look at the first frame
+    for _ in range(2): #just look at the first frame
         ret, frame = cap.read()
         if not ret: break
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

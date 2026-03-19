@@ -11,6 +11,8 @@ from torchvision.models.optical_flow import raft_large #for optical flow
 import torch.nn.functional as F
 from transformers import AutoModel
 from depth_anything_3.api import DepthAnything3
+import numpy as np
+import scipy.sparse.linalg as linalg
 
 def mp4_to_frames(video_path):
     frames = []
@@ -120,6 +122,105 @@ def preprocess(vid_tensor, raw_frames, name, dino_model, raft_model, depth_model
     
     print(f"done: {vid_name}")
     
+    
+def get_maskcut_mask(img_rgb, dino_model, device):
+    '''
+    To construct the maskcut mask, and store it on disk.
+    using the full resolution dino instead of the downscaled 16x61 variant that was used before
+    '''
+    #dinov2-base has 518x518 base res, and a patch size of 37x37
+    res_size = 518
+    transform = v2.Compose([
+        v2.ToImage(),
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Resize((res_size, res_size), antialias=True),
+        v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    img_t = transform(img_rgb).unsqueeze(0).to(device)
+    
+    with torch.no_grad():
+        #extract features at native resolution
+        outputs = dino_model(img_t)
+        #patch tokens shape: [1, 1369, 768] for 37x37 grid
+        feats = outputs.last_hidden_state[0, 1:, :] 
+        feats = F.normalize(feats, p=2, dim=-1)
+    
+    '''
+    performing maskcut below (from tokenCut paper! it builds affinity graph)
+    '''
+    #this measures how much every patch 'looks like' every other patch
+    A = torch.matmul(feats, feats.T) 
+    A = A.cpu().numpy()
+    #we calculate the degree matrix D and Laplacian L
+    #ncuts finds the 'weakest link' in the graph to separate foreground
+    D = np.diag(np.sum(A, axis=1))
+    L = D - A
+    
+    try:
+        #this vector values will be positive for object, negative for bg
+        eigval, eigvec = linalg.eigsh(L, k=2, which='SM', M=D)
+        eigenvector = eigvec[:, 1]
+        
+        #thresholding
+        mask_raw = (eigenvector > np.median(eigenvector)).astype(np.float32)
+        
+        #I want actor=1, bg=0 (by checking the 4 corners)
+        mask_grid = mask_raw.reshape(37, 37)
+        corner_sum = mask_grid[0,0] + mask_grid[0,-1] + mask_grid[-1,0] + mask_grid[-1,-1]
+        if corner_sum > 2:
+            mask_grid = 1.0 - mask_grid
+            
+    except Exception as e:
+        #fallback to zeros if spectral clustering fails to converge
+        mask_grid = np.zeros((37, 37), dtype=np.float32)
+    
+    mask_t = torch.from_numpy(mask_grid).unsqueeze(0).unsqueeze(0)
+    mask_16 = F.interpolate(mask_t, size=(16, 16), mode='nearest')
+    
+    return mask_16.squeeze() #returns [16, 16]. is this too low? should native resolution be used..?
+    
+    
+def process_video_maskcuts(vid_name, raw_frames, dino_model, device, stride=2):
+    #to loop through frames and save the maskcut.pt file
+    video_dir = os.path.join("ucfrep_intermediate_dataset", vid_name)
+    os.makedirs(video_dir, exist_ok=True)
+    
+    strided_frames = raw_frames[::stride]
+    mask_list = []
+    
+    print(f"# {vid_name}: generating maskcut pseudo-labels...")
+    for i, frame in enumerate(strided_frames):
+        #matching the img_rgb first order
+        mask = get_maskcut_mask(frame, dino_model, device)
+        mask_list.append(mask.half()) 
+        
+        #save a preview jpg for the very first frame to verify quality
+        if i == 0:
+            #upscale mask back to 224 for a clear overlay
+            mask_viz = F.interpolate(mask.view(1,1,16,16).float(), size=(224, 224), mode='bilinear').squeeze().cpu().numpy()
+            mask_viz = (mask_viz * 255).astype(np.uint8)
+            
+            #apply colormap to mask
+            mask_color = cv2.applyColorMap(mask_viz, cv2.COLORMAP_JET)
+            
+            #resize original frame to 224
+            frame_resized = cv2.resize(frame, (224, 224))
+            #convert rgb to bgr for opencv saving
+            frame_bgr = cv2.cvtColor(frame_resized, cv2.COLOR_RGB2BGR)
+            
+            overlay = cv2.addWeighted(frame_bgr, 0.6, mask_color, 0.4, 0)
+            
+            #stack original and overlay side-by-side
+            comparison = np.hstack([frame_bgr, overlay])
+            
+            save_path_img = os.path.join(video_dir, "mask_preview.jpg")
+            cv2.imwrite(save_path_img, comparison)
+            # print(f"# saved preview to {save_path_img}")
+        
+    save_path = os.path.join(video_dir, "maskcut.pt")
+    torch.save(torch.stack(mask_list), save_path)
+    print(f"# done: saved {len(mask_list)} masks to {save_path}")
     
 # class UCFRep_train(Dataset):
 #     def __init__(self, root_dir, clip_len=8, k_gap=5):
@@ -376,21 +477,31 @@ if __name__ == "__main__":
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    #depth model - switch to base for speed
-    depth_model = DepthAnything3.from_pretrained("depth-anything/da3-base")
-    depth_model = depth_model.to(device=device)
+    # #depth model - switch to base for speed
+    # depth_model = DepthAnything3.from_pretrained("depth-anything/da3-base")
+    # depth_model = depth_model.to(device=device)
     
     #dino model
     model_name = 'facebook/dinov2-base'
     dino_model = AutoModel.from_pretrained(model_name, output_attentions=True).cuda()
     dino_model.eval()
     
-    #optical flow model
-    raft_model = raft_large(pretrained=True, progress=False).cuda().eval()
+    # #optical flow model
+    # raft_model = raft_large(pretrained=True, progress=False).cuda().eval()
 
+    # for idx, vid_file in enumerate(os.listdir(dir)):
+    #     #each one is an mp4 file
+    #     frames = mp4_to_frames(os.path.join(dir, vid_file)) #get frames
+    #     video_tensor = tensorize_vid(frames, transform)
+        
+    #     preprocess(video_tensor, frames, vid_file, dino_model, raft_model, depth_model)
+    
+    
     for idx, vid_file in enumerate(os.listdir(dir)):
         #each one is an mp4 file
         frames = mp4_to_frames(os.path.join(dir, vid_file)) #get frames
-        video_tensor = tensorize_vid(frames, transform)
+        vid_name = os.path.splitext(vid_file)[0]
         
-        preprocess(video_tensor, frames, vid_file, dino_model, raft_model, depth_model)
+        process_video_maskcuts(vid_name, frames, dino_model, device)
+    
+    

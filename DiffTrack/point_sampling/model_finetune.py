@@ -28,7 +28,9 @@ class DINOv2_LoRA(nn.Module):
         NEW!- adding a head after finetuning for mask generation..
         '''
         self.seg_head = nn.Sequential(
-            nn.Conv2d(768, 1, kernel_size=1), #768d is the output of DINOv2-base
+            # kernel_size=(3, 1, 1): Looks across 3 frames, but 1x1 spatially.
+            # padding=(1, 0, 0): Ensures the output Time dimension remains T=2.
+            nn.Conv3d(768, 1, kernel_size=(3, 1, 1), padding=(1, 0, 0)), #768d is the output of DINOv2-base
             nn.Sigmoid() #output 0-1
         )
 
@@ -47,24 +49,34 @@ class DINOv2_LoRA(nn.Module):
         #reshape back to [b*t, 768, 16, 16] for spatial masking later
         patch_features = features[:, 1:, :].permute(0, 2, 1).view(b * t, 768, 16, 16)
         
+        patch_features_unsq = patch_features.view(b, t, 768, 16, 16)
+        patch_features_3d = patch_features_unsq.permute(0, 2, 1, 3, 4)
+        pred_mask_3d = self.seg_head(patch_features_3d) #output- [B, 1, T, 16, 16]
+        
         #pass the predicted patch tokens into head, to get mask
-        pred_mask = self.seg_head(patch_features)
+        pred_mask = pred_mask_3d.permute(0, 2, 1, 3, 4)
         return {
-            "patch_features": patch_features.view(b, t, 768, 16, 16),
+            "patch_features": patch_features_unsq.view(b, t, 768, 16, 16),
             "pred_mask": pred_mask.view(b, t, 1, 16, 16)
         }
         
 
-def get_robust_mask(flow, depth, threshold_multiplier=1.2):
+def get_robust_mask(flow, depth, threshold_multiplier=1.2, sigma=1.5):
     #flow shape: [b, t, 2, h, w], depth shape: [b, t, 1, h, w]
     #this acts as a noisy teacher, giving dino a hint on where to look
-    
+    b, t, _, h, w = flow.shape
     # calculate motion magnitude
     mag = torch.norm(flow, dim=2, keepdim=True) #[b, t, 1, h, w]
         
     #normalizing per frame- f_max: [b, t, 1, 1, 1]
     f_max = depth.flatten(2).max(dim=-1)[0].view(depth.shape[0], depth.shape[1], 1, 1, 1)
     depth_norm = depth / (f_max + 1e-8)
+    
+    
+    # y_grid = torch.linspace(-1, 1, h, device=flow.device).view(1, 1, 1, h, 1)
+    # x_grid = torch.linspace(-1, 1, w, device=flow.device).view(1, 1, 1, 1, w)
+
+    # center_prior = torch.exp(-(x_grid**2 + y_grid**2) / (2 * sigma**2))
     
     combined_score = mag * depth_norm
     
