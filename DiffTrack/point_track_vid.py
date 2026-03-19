@@ -406,22 +406,30 @@ def main(args):
 
         query_points_np = query_points_i.clone().cpu().numpy()
         
-        # SAVE trajectory as .pkl file!!
+        '''
+        SAVE trajectory as .pkl file!!
+        '''
         
-        traj_dir = os.path.join(output_dir, 'trajectories')
-        os.makedirs(traj_dir, exist_ok=True)
-        traj_save_path = os.path.join(traj_dir, f'{j:03d}_trajectory.pkl')
+        # traj_dir = os.path.join(output_dir, 'trajectories')
+        # os.makedirs(traj_dir, exist_ok=True)
+        # traj_save_path = os.path.join(traj_dir, f'{j:03d}_trajectory.pkl')
         
-        traj_data = {
-            'trajectory': trajectory.cpu().numpy(),  # (B, T, N, 2)
-            'query_points': query_points_np,  # (B, N, 3)
-            'video_shape': (T, H, W),  # resized dimensions
-            'original_shape': (H_ori, W_ori)
-        }
+        # traj_data = {
+        #     'trajectory': trajectory.cpu().numpy(),  # (B, T, N, 2)
+        #     'query_points': query_points_np,  # (B, N, 3)
+        #     'video_shape': (T, H, W),  # resized dimensions
+        #     'original_shape': (H_ori, W_ori)
+        # }
         
-        with open(traj_save_path, 'wb') as f:
-            pickle.dump(traj_data, f)
-        print(f"Saved trajectory to {traj_save_path}")
+        # with open(traj_save_path, 'wb') as f:
+        #     pickle.dump(traj_data, f)
+        # print(f"Saved trajectory to {traj_save_path}")
+        
+        
+        
+        '''
+        end
+        '''
         # gt_tracks = gt_trajectory.clone().permute(0, 2, 1, 3)[:, :, :trajectory.shape[1], :].cpu().numpy()
         # gt_occluded = torch.logical_not(visibility.clone().permute(0, 2, 1)).cpu().numpy()
         # pred_tracks = trajectory.permute(0, 2, 1, 3).cpu().numpy()
