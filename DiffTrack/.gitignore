@@ -177,7 +177,7 @@ trash/
 output/
 
 # custom stuff
-diffusers/
+# diffusers/
 dataset/
 sample/
 tapvid_davis/

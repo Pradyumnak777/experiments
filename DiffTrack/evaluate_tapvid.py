@@ -389,14 +389,13 @@ def main(args):
 
 
 if __name__ == "__main__":
-    project_root = "/scratch/pbk5339/DiffTrack"
+    project_root = os.path.dirname(os.path.abspath(__file__))
     if os.path.exists(project_root):
         os.chdir(project_root)
-        print(f"DEBUG: working directory set to: {os.getcwd()}")
     else:
-        print("using default cwd.")
+        print("path doesnt exist.")
     
-    model = "cogvideox_t2v_2b"
+    model = "cogvideox_t2v_2b" #vid diff model
     
     sys.argv = [
         "evaluate_tapvid.py",

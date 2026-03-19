@@ -350,14 +350,14 @@ def main(args):
         # grid_sample expects (x, y) order in the last dimension
         grid_xy = queried_coords_latent[:, :, [2, 1]].clone()  # (x, y)
 
-        # Normalize to [-1, 1] using correct denominators (align_corners=True below)
+        # norm to [-1, 1] using correct denominators (align_corners=True below)
         grid_xy[:, :, 0] = (grid_xy[:, :, 0] / (w - 1)) * 2 - 1  # x normalized by w
         grid_xy[:, :, 1] = (grid_xy[:, :, 1] / (h - 1)) * 2 - 1  # y normalized by h
 
         num_queries = query_points_i.size(1)
         grid = grid_xy.view(B, num_queries, 1, 2).to(args.pipe_device)
 
-        # The initial track is the (normalized) query coordinates.
+        # \the initial track is the (normalized) query coordinates.
         tracks = []
         tracks.append(queried_coords_latent[:,:,1:].unsqueeze(1).to(args.pipe_device))
 
@@ -379,7 +379,7 @@ def main(args):
         '''
         trajectory = torch.cat(tracks, dim=1) #predicted trajectory?
 
-        # Scale back the coordinates.
+        # scale back
         scaling_factor_x = latent_scaling_size 
         scaling_factor_y = latent_scaling_size
 
