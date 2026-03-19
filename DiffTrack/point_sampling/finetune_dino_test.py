@@ -8,9 +8,9 @@ import matplotlib.pyplot as plt
 from transformers import AutoModel
 # from sklearn.cluster import KMeans
 
-checkpoint_path = "test_models/lora_dino_epoch_1.pth" 
-video_path = "UCF_Rep/val/v_PlayingViolin_g22_c02.mp4" #pick a specific video to test
-# video_path = "vids_mp4/swim.mp4" #pick a specific video to test 
+checkpoint_path = "test_models/new_lora_dino_epoch_49.pth" 
+video_path = "UCF_Rep/val/v_CuttingInKitchen_g21_c01.mp4" #pick a specific video to test
+# video_path = "vids_mp4/benchpress.mp4" #pick a specific video to test 
 # video_path = "countix/-dxBq0WzYRU_35.42309_37.71705.mp4"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -44,13 +44,13 @@ def visualize():
 
     with torch.no_grad():
         #features shape: [1, T, 768, 16, 16]
-        features = model(input_tensor)
+        outputs = model(input_tensor)
         
         #calculate self-similarity to find the 'actor'
         #we take the average feature vector as the 'goal'
         #then see which patches look most like it
-        avg_feature = features.mean(dim=(1, 3, 4), keepdim=True) # [1, 1, 768, 1, 1]
-        sim_map = torch.cosine_similarity(features, avg_feature, dim=2) # [1, T, 16, 16]
+        features = outputs["patch_features"]
+        predicted_mask = outputs["pred_mask"]
 
         # '''
         # alt method
@@ -99,9 +99,10 @@ def visualize():
         
     #4. plotting (first frame only)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    heatmap_tensor = predicted_mask[0, 0].unsqueeze(0)
 
     heatmap = F.interpolate(
-        sim_map[0, 0].view(1, 1, 16, 16),
+        heatmap_tensor, # Take first frame of the pair
         size=(224, 224),
         mode='bilinear'
     ).squeeze().cpu().numpy()
@@ -121,11 +122,11 @@ def visualize():
     # cbar.set_label('similarity to actor vector', rotation=270, labelpad=15)
 
     plt.tight_layout()
-    os.makedirs("point_sampling/finetuned_test/", exist_ok=True)
+    os.makedirs("point_sampling/finetuned_test_new/", exist_ok=True)
     
     # Extract video name without .mp4 and leading directories
     video_name = os.path.splitext(os.path.basename(video_path))[0]
-    save_name = f"point_sampling/finetuned_test/{video_name}_dino_mask.png"
+    save_name = f"point_sampling/finetuned_test_new/{video_name}_dino_mask.png"
     plt.savefig(save_name, bbox_inches='tight')
     print(f"saved visualization to {save_name}")
 

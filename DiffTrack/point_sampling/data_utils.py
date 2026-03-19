@@ -302,6 +302,7 @@ class UCFRep_finetune(Dataset):
         self.mp4_dir = mp4_dir
         self.video_names = [f for f in os.listdir(pt_dir) if os.path.isdir(os.path.join(pt_dir, f))]
         self.k = k
+        self.pt_dir = pt_dir
         
         self.norm_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
         self.norm_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
