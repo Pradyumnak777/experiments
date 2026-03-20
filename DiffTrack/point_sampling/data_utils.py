@@ -13,6 +13,7 @@ from transformers import AutoModel
 from depth_anything_3.api import DepthAnything3
 import numpy as np
 import scipy.sparse.linalg as linalg
+import matplotlib.pyplot as plt
 
 def mp4_to_frames(video_path):
     frames = []
@@ -123,105 +124,146 @@ def preprocess(vid_tensor, raw_frames, name, dino_model, raft_model, depth_model
     print(f"done: {vid_name}")
     
     
-def get_maskcut_mask(img_rgb, dino_model, device):
-    '''
-    To construct the maskcut mask, and store it on disk.
-    using the full resolution dino instead of the downscaled 16x61 variant that was used before
-    '''
-    #dinov2-base has 518x518 base res, and a patch size of 37x37
-    res_size = 518
-    transform = v2.Compose([
-        v2.ToImage(),
-        v2.ToDtype(torch.float32, scale=True),
-        v2.Resize((res_size, res_size), antialias=True),
-        v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
+def save_graph_cross_video(vid1_name, vid2_name, frames1, frames2, device, dino_model, cls_name, stride=2, num_pairs=3):
+    strided1 = frames1[::stride] #keeping only every second frame
+    strided2 = frames2[::stride]
     
-    img_t = transform(img_rgb).unsqueeze(0).to(device)
+    idx_list1 = torch.randperm(len(strided1))[:num_pairs]
+    idx_list2 = torch.randperm(len(strided2))[:num_pairs]
     
-    with torch.no_grad():
-        #extract features at native resolution
-        outputs = dino_model(img_t)
-        #patch tokens shape: [1, 1369, 768] for 37x37 grid
-        feats = outputs.last_hidden_state[0, 1:, :] 
-        feats = F.normalize(feats, p=2, dim=-1)
-    
-    '''
-    performing maskcut below (from tokenCut paper! it builds affinity graph)
-    '''
-    #this measures how much every patch 'looks like' every other patch
-    A = torch.matmul(feats, feats.T) 
-    A = A.cpu().numpy()
-    #we calculate the degree matrix D and Laplacian L
-    #ncuts finds the 'weakest link' in the graph to separate foreground
-    D = np.diag(np.sum(A, axis=1))
-    L = D - A
-    
-    try:
-        #this vector values will be positive for object, negative for bg
-        eigval, eigvec = linalg.eigsh(L, k=2, which='SM', M=D)
-        eigenvector = eigvec[:, 1]
+    #generate a few pairs per video combo to save processing time later
+    for p in range(num_pairs):
+        #pull from our unique lists instead of rolling the dice every time
+        i = idx_list1[p].item()
+        j = idx_list2[p].item()
         
-        #thresholding
-        mask_raw = (eigenvector > np.median(eigenvector)).astype(np.float32)
+        im1, im2 = strided1[i], strided2[j]
         
-        #I want actor=1, bg=0 (by checking the 4 corners)
-        mask_grid = mask_raw.reshape(37, 37)
-        corner_sum = mask_grid[0,0] + mask_grid[0,-1] + mask_grid[-1,0] + mask_grid[-1,-1]
-        if corner_sum > 2:
-            mask_grid = 1.0 - mask_grid
-            
-    except Exception as e:
-        #fallback to zeros if spectral clustering fails to converge
-        mask_grid = np.zeros((37, 37), dtype=np.float32)
+        #now perform the joint co-segmentation on these images(like in the paper - "wholly unsupervised!")
+        res_size = 518 #DINOv2-base resolution (37x37 grid)
+        transform = v2.Compose([
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Resize((res_size, res_size), antialias=True),
+            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
     
-    mask_t = torch.from_numpy(mask_grid).unsqueeze(0).unsqueeze(0)
-    mask_16 = F.interpolate(mask_t, size=(16, 16), mode='nearest')
-    
-    return mask_16.squeeze() #returns [16, 16]. is this too low? should native resolution be used..?
-    
-    
-def process_video_maskcuts(vid_name, raw_frames, dino_model, device, stride=2):
-    #to loop through frames and save the maskcut.pt file
-    video_dir = os.path.join("ucfrep_intermediate_dataset", vid_name)
-    os.makedirs(video_dir, exist_ok=True)
-    
-    strided_frames = raw_frames[::stride]
-    mask_list = []
-    
-    print(f"# {vid_name}: generating maskcut pseudo-labels...")
-    for i, frame in enumerate(strided_frames):
-        #matching the img_rgb first order
-        mask = get_maskcut_mask(frame, dino_model, device)
-        mask_list.append(mask.half()) 
+        img1_t = transform(im1).unsqueeze(0).to(device)
+        img2_t = transform(im2).unsqueeze(0).to(device)
         
-        #save a preview jpg for the very first frame to verify quality
-        if i == 0:
-            #upscale mask back to 224 for a clear overlay
-            mask_viz = F.interpolate(mask.view(1,1,16,16).float(), size=(224, 224), mode='bilinear').squeeze().cpu().numpy()
-            mask_viz = (mask_viz * 255).astype(np.uint8)
+        with torch.no_grad():
+            #extract dino feats
+            feat1 = dino_model(img1_t).last_hidden_state[0, 1:, :] #[1369, 768]
+            feat2 = dino_model(img2_t).last_hidden_state[0, 1:, :] # 1369, 768]
             
-            #apply colormap to mask
-            mask_color = cv2.applyColorMap(mask_viz, cv2.COLORMAP_JET)
-            
-            #resize original frame to 224
-            frame_resized = cv2.resize(frame, (224, 224))
-            #convert rgb to bgr for opencv saving
-            frame_bgr = cv2.cvtColor(frame_resized, cv2.COLOR_RGB2BGR)
-            
-            overlay = cv2.addWeighted(frame_bgr, 0.6, mask_color, 0.4, 0)
-            
-            #stack original and overlay side-by-side
-            comparison = np.hstack([frame_bgr, overlay])
-            
-            save_path_img = os.path.join(video_dir, "mask_preview.jpg")
-            cv2.imwrite(save_path_img, comparison)
-            # print(f"# saved preview to {save_path_img}")
+            feat1 = F.normalize(feat1, p=2, dim=-1)
+            feat2 = F.normalize(feat2, p=2, dim=-1)
         
-    save_path = os.path.join(video_dir, "maskcut.pt")
-    torch.save(torch.stack(mask_list), save_path)
-    print(f"# done: saved {len(mask_list)} masks to {save_path}")
+        #join these features for the graph- [2378, 768]
+        joint_feats = torch.cat([feat1, feat2], dim=0)
+        S = torch.matmul(joint_feats, joint_feats.T) #this is basically a graph of the cosine similarities b/w each feature(normalize dbefore too)
+        
+        '''
+        using the method used in the 'wholly unsupervised!' paper..
+        '''
+        sigma_a = 0.16
+        sigma_r = 0.3
+        omega = 0.4
+        
+        A = torch.exp(-((1.0 - S)**2) / (2 * sigma_a**2)) #attraction
+        R = torch.exp(-((S + 1.0)**2) / (2 * sigma_r**2)) #repulsion
+        A = A.cpu().numpy()
+        R = R.cpu().numpy()
+        
+        R = omega * R
+        
+        #the graph
+        D_A = np.diag(np.sum(A, axis=1))
+        D_R = np.diag(np.sum(R, axis=1))
+        
+        W = A - R + D_R
+        D = D_A + D_R
+        L = D - W
+        
+        try:
+            eigval, eigvec = linalg.eigsh(L, k=2, which='SM', M=D)
+            z = eigvec[:, 1]
+            
+            # #tokencut below
+            # split_val = np.mean(z)
+            # set_A = z <= split_val
+            # set_B = z > split_val
+            # max_idx = np.argmax(np.abs(z))
+            
+            # if set_A[max_idx]:
+            #     joint_mask_raw = set_A.astype(np.float32)
+            # else:
+            #     joint_mask_raw = set_B.astype(np.float32)
+            
+            
+            split_val = np.mean(z)
+            mask_raw = (z > split_val).astype(np.float32)
+            
+            #spllitting back to the frames
+            num_patches = feat1.shape[0]
+            mask1_raw_check = mask_raw[:num_patches].reshape(37, 37)
+            
+            #if the majority of corners are '1', 
+            #it means the mask accidentally labeled the background as the actor.
+            corner_sum = mask1_raw_check[0,0] + mask1_raw_check[0,-1] + mask1_raw_check[-1,0] + mask1_raw_check[-1,-1]
+            
+            if corner_sum > 2:
+                #invert the entire joint mask so the actor becomes 1
+                joint_mask_final = 1.0 - mask_raw
+            else:
+                joint_mask_final = mask_raw
+                
+            mask1_raw = joint_mask_final[:num_patches].reshape(37, 37)
+            mask2_raw = joint_mask_final[num_patches:].reshape(37, 37)
+                
+        except Exception as e:
+            mask1_raw = np.zeros((37, 37), dtype=np.float32)
+            mask2_raw = np.zeros((37, 37), dtype=np.float32)
     
+        #save the masks inside a class folder so it's easy to track
+        base_dir = os.path.join("co-segmentation", cls_name)
+        pair_name = f"{vid1_name}_{i:04d}_AND_{vid2_name}_{j:04d}"
+        pair_dir = os.path.join(base_dir, pair_name)
+        os.makedirs(pair_dir, exist_ok=True)
+
+        np.save(os.path.join(pair_dir, "mask1.npy"), mask1_raw.astype(np.float32))
+        np.save(os.path.join(pair_dir, "mask2.npy"), mask2_raw.astype(np.float32))
+        
+        #VISUALIZATION BLOCK
+        #creating a 2x2 grid: frames vs. masks
+        fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+        
+        #frame 1
+        axes[0, 0].imshow(im1)
+        axes[0, 0].set_title(f"anchor ({vid1_name} f{i*stride})")
+        axes[0, 0].axis('off')
+        
+        #mask 1
+        axes[0, 1].imshow(im1)
+        axes[0, 1].imshow(cv2.resize(mask1_raw, (im1.shape[1], im1.shape[0])), alpha=0.5, cmap='jet')
+        axes[0, 1].set_title("joint mask 1")
+        axes[0, 1].axis('off')
+        
+        #frame 2
+        axes[1, 0].imshow(im2)
+        axes[1, 0].set_title(f"positive ({vid2_name} f{j*stride})")
+        axes[1, 0].axis('off')
+        
+        #mask 2
+        axes[1, 1].imshow(im2)
+        axes[1, 1].imshow(cv2.resize(mask2_raw, (im2.shape[1], im2.shape[0])), alpha=0.5, cmap='jet')
+        axes[1, 1].set_title("joint mask 2")
+        axes[1, 1].axis('off')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(pair_dir, "visual_check.jpg"), dpi=150)
+        plt.close(fig)
+        
 # class UCFRep_train(Dataset):
 #     def __init__(self, root_dir, clip_len=8, k_gap=5):
 #         '''
@@ -395,22 +437,30 @@ def process_video_maskcuts(vid_name, raw_frames, dino_model, device, stride=2):
     
     
 class UCFRep_finetune(Dataset):
-    def __init__(self, k = 6, mp4_dir = None, pt_dir = None): #strided dataset!! frame rate is halved!!
+    def __init__(self, mp4_dir = None, pt_dir = None, co_seg_dir = "co-segmentation"): 
         '''
         mp4_dir: path to 'UCF_Rep/train' (the raw videos)
         pt_dir: path to 'ucfrep_intermediate_dataset' (where flow/depth are- at halved framerate)
         '''
         self.mp4_dir = mp4_dir
-        self.video_names = [f for f in os.listdir(pt_dir) if os.path.isdir(os.path.join(pt_dir, f))]
-        self.k = k
         self.pt_dir = pt_dir
+        self.co_seg_dir = co_seg_dir
+        
+        #don't loop by video anymore, we loop by our pre-computed pairs
+        self.pair_paths = []
+        if os.path.exists(co_seg_dir):
+            for cls_name in os.listdir(co_seg_dir):
+                cls_path = os.path.join(co_seg_dir, cls_name)
+                if os.path.isdir(cls_path):
+                    for pair_folder in os.listdir(cls_path):
+                        self.pair_paths.append(os.path.join(cls_path, pair_folder))
         
         self.norm_mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
         self.norm_std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
     
-    def __len__(self): #should i return num of videos? or the num of total imag epairs i'll form from all the videos..?
-        return len(self.video_names)
-        #note: __len__ defines how many times the __getitem__ method can be called per epoch..
+    def __len__(self): 
+        #returns total number of cross-video pairs we generated
+        return len(self.pair_paths)
     
     def _get_single_frame(self, video_path, frame_idx):
         cap = cv2.VideoCapture(video_path)
@@ -428,39 +478,43 @@ class UCFRep_finetune(Dataset):
     
     def __getitem__(self, idx):
         '''
-        to return:
-        1. video(RGB), flow, depth (entire video)
-        
-        OR
-        
-        2. [2, 3, H, W] , [2, 2, H, W] , [2, 1, H, W] -> returning only the pair
+        returning the exact cross-video pair and their respective masks
         '''
-        v_name = self.video_names[idx]
-        pt_path = os.path.join(self.pt_dir, v_name)
-        mp4_path = os.path.join(self.mp4_dir, v_name + ".mp4")
+        pair_path = self.pair_paths[idx]
+        folder_name = os.path.basename(pair_path)
         
-        #note that these are strided by 2..
-        flow_all = torch.load(os.path.join(pt_path, "flow.pt"), weights_only=True)
-        depth_all = torch.load(os.path.join(pt_path, "depth.pt"), weights_only=True)
-        t_subsampled = flow_all.shape[0] #num of frames
+        #format is vid1_name_000idx_AND_vid2_name_000idx
+        parts = folder_name.split("_AND_")
         
-        #now a pair, (t, t+k) is needed. again note that k =6, mens actually 12, as frames are subsampled
-        max_start = t_subsampled - self.k - 1
-        if max_start <= 0: #if clip is very short
-            im1_idx = 0
-            im2_idx = min(self.k, t_subsampled - 1)
-        else: #pick random
-            im1_idx = torch.randint(0, max_start, (1,)).item()
-            im2_idx = im1_idx + self.k
-            
-        im1_flow = flow_all[im1_idx].float()   #[2, 224, 224]
-        im1_depth = depth_all[im1_idx].float()   #[1, 224, 224]
+        #extracting names and indices cleanly
+        vid1_parts = parts[0].split("_")
+        vid1_name = "_".join(vid1_parts[:-1])
+        im1_idx = int(vid1_parts[-1])
         
-        im2_flow = flow_all[im2_idx].float()   #[2, 224, 224]
-        im2_depth = depth_all[im2_idx].float()   #[1, 224, 224]
+        vid2_parts = parts[1].split("_")
+        vid2_name = "_".join(vid2_parts[:-1])
+        im2_idx = int(vid2_parts[-1])
         
-        im1 = self._get_single_frame(mp4_path, im1_idx * 2) #multiplying by 2 as stride was 2. So keeping every 2nd frame
-        im2 = self._get_single_frame(mp4_path, im2_idx * 2)
+        #setting up paths
+        pt_path1 = os.path.join(self.pt_dir, vid1_name)
+        pt_path2 = os.path.join(self.pt_dir, vid2_name)
+        mp4_path1 = os.path.join(self.mp4_dir, vid1_name + ".mp4")
+        mp4_path2 = os.path.join(self.mp4_dir, vid2_name + ".mp4")
+        
+        #load flow and depth from pt dirs
+        im1_flow = torch.load(os.path.join(pt_path1, "flow.pt"), weights_only=True)[im1_idx].float()
+        im1_depth = torch.load(os.path.join(pt_path1, "depth.pt"), weights_only=True)[im1_idx].float()
+        
+        im2_flow = torch.load(os.path.join(pt_path2, "flow.pt"), weights_only=True)[im2_idx].float()
+        im2_depth = torch.load(os.path.join(pt_path2, "depth.pt"), weights_only=True)[im2_idx].float()
+        
+        #load frames (multiplying by 2 as stride was 2)
+        im1 = self._get_single_frame(mp4_path1, im1_idx * 2) 
+        im2 = self._get_single_frame(mp4_path2, im2_idx * 2)
+        
+        #load the ccg masks we generated offline
+        mask1 = torch.from_numpy(np.load(os.path.join(pair_path, "mask1.npy")))
+        mask2 = torch.from_numpy(np.load(os.path.join(pair_path, "mask2.npy")))
         
         return {
             "im1_pixels": im1,
@@ -469,39 +523,50 @@ class UCFRep_finetune(Dataset):
             "im1_depth": im1_depth,
             "im2_flow": im2_flow,
             "im2_depth": im2_depth,
-            "vid_name": v_name
-        }
-    
+            "mask1": mask1,
+            "mask2": mask2,
+            "vid1_name": vid1_name,
+            "vid2_name": vid2_name
+        }        
+            
 if __name__ == "__main__":
     dir = "UCF_Rep/train"
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # #depth model - switch to base for speed
-    # depth_model = DepthAnything3.from_pretrained("depth-anything/da3-base")
-    # depth_model = depth_model.to(device=device)
     
     #dino model
     model_name = 'facebook/dinov2-base'
     dino_model = AutoModel.from_pretrained(model_name, output_attentions=True).cuda()
     dino_model.eval()
     
-    # #optical flow model
-    # raft_model = raft_large(pretrained=True, progress=False).cuda().eval()
-
-    # for idx, vid_file in enumerate(os.listdir(dir)):
-    #     #each one is an mp4 file
-    #     frames = mp4_to_frames(os.path.join(dir, vid_file)) #get frames
-    #     video_tensor = tensorize_vid(frames, transform)
+    #group all videos by class before making pairs
+    vid_files = [f for f in os.listdir(dir) if f.endswith('.mp4')]
+    class_dict = {}
+    for f in vid_files:
+        cls_name = f.split('_')[1] #gets 'BreastStroke' from 'v_BreastStroke_g01_c01.mp4'
+        if cls_name not in class_dict:
+            class_dict[cls_name] = []
+        class_dict[cls_name].append(f)
         
-    #     preprocess(video_tensor, frames, vid_file, dino_model, raft_model, depth_model)
-    
-    
-    for idx, vid_file in enumerate(os.listdir(dir)):
-        #each one is an mp4 file
-        frames = mp4_to_frames(os.path.join(dir, vid_file)) #get frames
-        vid_name = os.path.splitext(vid_file)[0]
-        
-        process_video_maskcuts(vid_name, frames, dino_model, device)
-    
+    #loop through classes and pick random different videos
+    for cls_name, vids in class_dict.items():
+        if len(vids) < 2:
+            continue #need at least 2 videos to make a cross-video pair
+            
+        for vid1_file in vids:
+            vid1_name = os.path.splitext(vid1_file)[0]
+            frames1 = mp4_to_frames(os.path.join(dir, vid1_file))
+            
+            #pick a different random video from the same class
+            valid_vids = [v for v in vids if v != vid1_file]
+            if len(valid_vids) == 0:
+                continue
+                
+            vid2_file = np.random.choice(valid_vids)
+            vid2_name = os.path.splitext(vid2_file)[0]
+            frames2 = mp4_to_frames(os.path.join(dir, vid2_file))
+            
+            #generate 3 random pairs between these two videos
+            save_graph_cross_video(vid1_name, vid2_name, frames1, frames2, device, dino_model, cls_name)
+            print(f"co-segmentation done for {vid1_name} and {vid2_name}")    
     

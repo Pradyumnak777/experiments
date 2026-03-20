@@ -192,3 +192,5 @@ ucfrep_intermediate_dataset/
 ucfrep_intermediate_dataset_old/
 test_models/
 UCF_Rep/
+co-segmentation_old/
+co-segmentation/

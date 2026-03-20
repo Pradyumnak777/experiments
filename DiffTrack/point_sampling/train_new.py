@@ -32,7 +32,7 @@ def train():
     dataset = UCFRep_finetune(
         mp4_dir="UCF_Rep/train",
         pt_dir="ucfrep_intermediate_dataset", 
-        k = 1
+        co_seg_dir="co-segmentation"
     )
     dataloader = DataLoader(dataset, batch_size=16, shuffle=True, drop_last=True) #EXPERIMENT WITH BATCH NEGATIVES LATER??
     
@@ -63,62 +63,66 @@ def train():
             flow = torch.cat([batch["im1_flow"].unsqueeze(1), batch["im2_flow"].unsqueeze(1)], dim=1).to(device)
             depth = torch.cat([batch["im1_depth"].unsqueeze(1), batch["im2_depth"].unsqueeze(1)], dim=1).to(device)
             
+            # grabbing the co-segmentation masks for contrastive loss
+            # these come in as [B, 37, 37]
+            mask1_coseg = batch["mask1"].to(device)
+            mask2_coseg = batch["mask2"].to(device)
+            
             b, t = pixels.shape[0], pixels.shape[1]
             
 
-            # with torch.amp.autocast('cuda'):
             outputs = model(pixels)
             patch_features = outputs["patch_features"] # [B, 2, 768, 16, 16]
             pred_mask = outputs["pred_mask"]  # [B, 2, 1, 16, 16]
 
-            #creating flow+depth mask
-            high_res_mask = get_robust_mask(flow, depth) #[B, 2, 1, 224, 224]
-            #downsample it
-            high_res_mask_flat = high_res_mask.view(b * t, 1, 224, 224)
-            low_res_mask = F.interpolate(high_res_mask_flat, size=(16, 16), mode='nearest')
-            binary_mask = low_res_mask.view(b, t, 1, 16, 16) # [B, 2, 1, 16, 16]..but will downsampling ruin the mask??
+            # 1. CROSS ENTROPY BRANCH (using flow + depth)
+            # this tells the model 'what' is the actor
+            high_res_fd_mask = get_robust_mask(flow, depth) # [B, 2, 1, 224, 224]
+            high_res_fd_flat = high_res_fd_mask.view(b * t, 1, 224, 224)
+            ce_target_low = F.interpolate(high_res_fd_flat, size=(16, 16), mode='nearest')
+            ce_target = ce_target_low.view(b, t, 1, 16, 16)
             
-            #cross entropy loss [CHECK PAPER: 'wholly unsupervised!..']
-            loss_ce = F.binary_cross_entropy(pred_mask, binary_mask)
+            loss_ce = F.binary_cross_entropy(pred_mask, ce_target)
+                        
+            # 2. CONTRASTIVE BRANCH (using co-segmentation masks)
+            # this tells the model 'how' to group features cleanly
             
-            #contrastive loss
-            features_flat = patch_features.permute(0, 1, 3, 4, 2).reshape(-1, 768) # [num patches, 768]
+            # first, interpolate the 37x37 coseg masks to 16x16 patch grid
+            coseg_stack = torch.stack([mask1_coseg, mask2_coseg], dim=1) # [B, 2, 37, 37]
+            coseg_stack = coseg_stack.unsqueeze(2) # [B, 2, 1, 37, 37]
+            
+            cr_target_flat = F.interpolate(coseg_stack.view(b*t, 1, 37, 37), size=(16, 16), mode='nearest')
+            cr_target = cr_target_flat.view(b, t, 1, 16, 16)
+            
+            # flatten features and masks for contrastive math
+            features_flat = patch_features.permute(0, 1, 3, 4, 2).reshape(-1, 768) 
             features_flat = F.normalize(features_flat, dim=1)
+            cr_mask_flat = cr_target.view(-1)
             
-            mask_flat = binary_mask.view(-1)
-            
-            #seperation
-            actor_vectors = features_flat[mask_flat == 1]
-            bg_vectors = features_flat[mask_flat == 0]
+            actor_vectors = features_flat[cr_mask_flat == 1]
+            bg_vectors = features_flat[cr_mask_flat == 0]
             
             loss_cr = torch.tensor(0.0, device=device)
+ 
             
             if actor_vectors.size(0) > 1 and bg_vectors.size(0) > 0:
-                
-                #similarity between all actors (positive set!)
+                # similarity between all actor patches across the whole batch
                 sim_pos = torch.matmul(actor_vectors, actor_vectors.T) / temperature
-                
-                # mask out the diagonal (self similarity avoiding)
                 eye = torch.eye(sim_pos.size(0), device=device, dtype=torch.bool)
                 sim_pos = sim_pos.masked_fill(eye, -1e9)
                 
-                # imilarity between actors and background (negative set)
+                # similarity between actors and background
                 sim_neg = torch.matmul(actor_vectors, bg_vectors.T) / temperature
                 
-                #math
+                # logsumexp trick for stability
                 max_val = torch.max(torch.cat([sim_pos, sim_neg], dim=1), dim=1, keepdim=True)[0]
                 exp_pos = torch.exp(sim_pos - max_val)
                 exp_neg = torch.exp(sim_neg - max_val)
                 
-                #InfoNCE
-                sum_exp_pos = exp_pos.sum(dim=1)
-                sum_exp_neg = exp_neg.sum(dim=1)
-                prob = sum_exp_pos / (sum_exp_pos + sum_exp_neg + 1e-8)
-                
-                # final CR loss is the negative log of that probability
+                prob = exp_pos.sum(dim=1) / (exp_pos.sum(dim=1) + exp_neg.sum(dim=1) + 1e-8)
                 loss_cr = -torch.log(prob + 1e-8).mean()
             
-            total_loss = loss_ce + loss_cr
+            total_loss = loss_ce + (0.5 * loss_cr)
                 
             # #scale and step
             # scaler.scale(total_loss).backward()
@@ -132,7 +136,7 @@ def train():
                 print(f"Epoch: {epoch}, Batch: {batch_idx}, Total Loss: {total_loss.item():.4f} (CE: {loss_ce.item():.4f}, CR: {loss_cr.item():.4f})")
         
         os.makedirs("test_models", exist_ok=True)
-        checkpoint_path = os.path.join("test_models", f"new3d_lora_dino_epoch_{epoch}.pth")
+        checkpoint_path = os.path.join("test_models", f"newv2_lora_dino_epoch_{epoch}.pth")
         # Save checkpoint every 50th epoch (50, 100, ...)
         if (epoch + 1) % 25 == 0:
             # safeguard for DataParallel saving
