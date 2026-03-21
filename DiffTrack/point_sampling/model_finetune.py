@@ -56,11 +56,16 @@ class DINOv2_LoRA(nn.Module):
         
 
 def get_robust_mask(flow, depth, threshold_multiplier=1.2, sigma=1.5):
-    #flow shape: [b, t, 2, h, w], depth shape: [b, t, 1, h, w]
+    #flow shape: [b, t, 2, h, w]
     b, t, _, h, w = flow.shape
     
-    #calculate motion magnitude
-    mag = torch.norm(flow, dim=2, keepdim=True) #[b, t, 1, h, w]
+    #find the median flow (the background speed) and subtract it
+    #flatten spatial dims, find median, reshape back for broadcasting
+    median_flow = flow.view(b, t, 2, -1).median(dim=3, keepdim=True)[0].view(b, t, 2, 1, 1)
+    relative_flow = flow - median_flow
+    
+    #calculate motion magnitude on the RELATIVE flow, not raw flow
+    mag = torch.norm(relative_flow, dim=2, keepdim=True) #[b, t, 1, h, w]
         
     #normalizing per frame- f_max: [b, t, 1, 1, 1]
     f_max = depth.flatten(2).max(dim=-1)[0].view(depth.shape[0], depth.shape[1], 1, 1, 1)
@@ -68,8 +73,6 @@ def get_robust_mask(flow, depth, threshold_multiplier=1.2, sigma=1.5):
     
     combined_score = mag * depth_norm
     
-    #this is perfectly fine for T=2 cross-video!
-    #dim=(3,4) calculates the threshold for Video A and Video B completely independently
     mean_score = combined_score.mean(dim=(3, 4), keepdim=True) 
     thresh = torch.clamp(mean_score * threshold_multiplier, min=0.01)
     

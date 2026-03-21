@@ -138,7 +138,7 @@ def train():
         os.makedirs("test_models", exist_ok=True)
         checkpoint_path = os.path.join("test_models", f"newv2_lora_dino_epoch_{epoch}.pth")
         # Save checkpoint every 50th epoch (50, 100, ...)
-        if (epoch + 1) % 25 == 0:
+        if (epoch + 1) % 10 == 0:
             # safeguard for DataParallel saving
             save_state = model.module.state_dict() if num_gpus > 1 else model.state_dict()
             torch.save(save_state, checkpoint_path)
