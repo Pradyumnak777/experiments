@@ -157,56 +157,36 @@ class UCFRep_finetune(Dataset):
         return (t_frame - self.norm_mean) / self.norm_std
     
     def __getitem__(self, idx):
-        '''
-        loads an intra-video pair dynamically using the goldilocks similarity check
-        '''
-        vid_name = self.video_names[idx]
-        
-        pt_path = os.path.join(self.pt_dir, vid_name)
-        mp4_path = os.path.join(self.mp4_dir, vid_name + ".mp4")
-        
-        # load dino features to find a good frame pair [t, 768, 16, 16]
-        dino_feats = torch.load(os.path.join(pt_path, "dino.pt"), map_location='cpu', weights_only=True)
-        t_frames = dino_feats.shape[0]
-        
-        # pick anchor frame
-        im1_idx = torch.randint(0, t_frames, (1,)).item()
-        
-        # calculate similarity to find a 'visually distinct' partner
-        global_feats = dino_feats.mean(dim=(2, 3)) 
-        sims = F.cosine_similarity(global_feats[im1_idx].unsqueeze(0), global_feats, dim=-1)
-        
-        avg_sim = sims.mean().item()
-        lower_bound = avg_sim * 0.8
-        upper_bound = avg_sim * 1.3
-        
-        valid_j_indices = torch.where((sims >= lower_bound) & (sims <= upper_bound) & (sims < 0.99))[0]
-        
-        if len(valid_j_indices) == 0:
-            # fallback: just pick a frame somewhat far away temporally
-            im2_idx = (im1_idx + t_frames // 3) % t_frames
-        else:
-            im2_idx = valid_j_indices[torch.randint(0, len(valid_j_indices), (1,))].item()
-
-        # load flow and depth from pt dirs
-        im1_flow = torch.load(os.path.join(pt_path, "flow.pt"), weights_only=True)[im1_idx].float()
-        im1_depth = torch.load(os.path.join(pt_path, "depth.pt"), weights_only=True)[im1_idx].float()
-        
-        im2_flow = torch.load(os.path.join(pt_path, "flow.pt"), weights_only=True)[im2_idx].float()
-        im2_depth = torch.load(os.path.join(pt_path, "depth.pt"), weights_only=True)[im2_idx].float()
-        
-        # load frames (multiplying by 2 as stride was 2)
-        im1 = self._get_single_frame(mp4_path, im1_idx * 2) 
-        im2 = self._get_single_frame(mp4_path, im2_idx * 2)
-        
-        return {
-            "im1_pixels": im1,
-            "im2_pixels": im2, 
-            "im1_flow": im1_flow,
-            "im1_depth": im1_depth,
-            "im2_flow": im2_flow,
-            "im2_depth": im2_depth,
-            "vid1_name": vid_name,
-            "vid2_name": vid_name 
-        }        
+            vid_name = self.video_names[idx]
+            pt_path = os.path.join(self.pt_dir, vid_name)
+            mp4_path = os.path.join(self.mp4_dir, vid_name + ".mp4")
             
+            #load just the shapes to find how many frames we have
+            t_frames = torch.load(os.path.join(pt_path, "dino.pt"), map_location='cpu', weights_only=True).shape[0]
+            
+            chunk_size = 3 #grabbing 3 consecutive strided frames
+            
+            #pick a random start frame, leaving room for the chunk
+            start_idx = torch.randint(0, max(1, t_frames - chunk_size), (1,)).item()
+            
+            #load the full tensors (it's faster to load all and slice than load individual items)
+            all_flow = torch.load(os.path.join(pt_path, "flow.pt"), weights_only=True).float()
+            all_depth = torch.load(os.path.join(pt_path, "depth.pt"), weights_only=True).float()
+            
+            chunk_pixels = []
+            chunk_flow = []
+            chunk_depth = []
+            
+            for i in range(start_idx, start_idx + chunk_size):
+                #multiply by 2 because our stride was 2
+                frame = self._get_single_frame(mp4_path, i * 2)
+                chunk_pixels.append(frame)
+                chunk_flow.append(all_flow[i])
+                chunk_depth.append(all_depth[i])
+                
+            return {
+                "pixels": torch.stack(chunk_pixels), #[3, 3, 224, 224]
+                "flow": torch.stack(chunk_flow),     #[3, 2, 224, 224]
+                "depth": torch.stack(chunk_depth),   #[3, 1, 224, 224]
+                "vid_name": vid_name
+            }            

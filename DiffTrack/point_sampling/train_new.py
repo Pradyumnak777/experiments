@@ -51,38 +51,34 @@ def train():
         for batch_idx, batch in enumerate(dataloader):
             optimizer.zero_grad()
             
-            pixels = torch.cat([batch["im1_pixels"].unsqueeze(1), batch["im2_pixels"].unsqueeze(1)], dim=1).to(device)
-            flow = torch.cat([batch["im1_flow"].unsqueeze(1), batch["im2_flow"].unsqueeze(1)], dim=1).to(device)
-            depth = torch.cat([batch["im1_depth"].unsqueeze(1), batch["im2_depth"].unsqueeze(1)], dim=1).to(device)
+            #data_utils now returns pre-stacked sequences [b, 3, c, h, w]
+            pixels = batch["pixels"].to(device)
+            flow = batch["flow"].to(device)
+            # depth = batch["depth"].to(device)
             
             b, t = pixels.shape[0], pixels.shape[1]
             
             outputs = model(pixels)
             patch_features = outputs["patch_features"]
             pred_mask = outputs["pred_mask"]
-            #fix: last_attn is now a tensor [b*t, 12, 261, 261]
-            last_attn = outputs["last_attn"] 
 
-            #1. CROSS ENTROPY BRANCH
-            high_res_fd_mask = get_robust_mask(flow, depth)
+            #1. THE PHYSICS MASK (used for both teachers)
+            high_res_fd_mask = get_robust_mask(flow) #[b, t, 1, 224, 224]
             high_res_fd_flat = high_res_fd_mask.view(b * t, 1, 224, 224)
-            ce_target_low = F.interpolate(high_res_fd_flat, size=(16, 16), mode='nearest')
-            ce_target = ce_target_low.view(b, t, 1, 16, 16)
             
-            loss_ce = F.binary_cross_entropy(pred_mask, ce_target)
+            #downsample to 16x16 for the loss functions
+            target_low = F.interpolate(high_res_fd_flat, size=(16, 16), mode='nearest')
+            target_low = target_low.view(b, t, 1, 16, 16)
+            
+            #2. CROSS ENTROPY BRANCH
+            #teaches the seg_head to find the moving actor
+            loss_ce = F.binary_cross_entropy(pred_mask, target_low)
                         
-            #2. CONTRASTIVE BRANCH
-            with torch.no_grad():
-                #fix: skip cls (0) and registers (1,2,3,4) to get 256 patches
-                cls_attn = last_attn[:, :, 0, 5:] #[b*t, 12, 256]
-                
-                attn_map = cls_attn.mean(dim=1).view(b, t, 16, 16)
-                thresh = torch.quantile(attn_map.view(b, t, -1), 0.9, dim=-1, keepdim=True).unsqueeze(-1)
-                cr_target = (attn_map > thresh).float().unsqueeze(2)
-            
+            #3. CONTRASTIVE BRANCH
+            #teaches the lora weights to temporally group those actor features
             features_flat = patch_features.permute(0, 1, 3, 4, 2).reshape(-1, 768) 
             features_flat = F.normalize(features_flat, dim=1)
-            cr_mask_flat = cr_target.view(-1)
+            cr_mask_flat = target_low.view(-1)
             
             actor_vectors = features_flat[cr_mask_flat == 1]
             bg_vectors = features_flat[cr_mask_flat == 0]
@@ -90,6 +86,7 @@ def train():
             loss_cr = torch.tensor(0.0, device=device)
             
             if actor_vectors.size(0) > 1 and bg_vectors.size(0) > 0:
+                #this similarity matrix now naturally spans across the t=3 chunk
                 sim_pos = torch.matmul(actor_vectors, actor_vectors.T) / temperature
                 eye = torch.eye(sim_pos.size(0), device=device, dtype=torch.bool)
                 sim_pos = sim_pos.masked_fill(eye, -1e9)
@@ -103,7 +100,7 @@ def train():
                 prob = exp_pos.sum(dim=1) / (exp_pos.sum(dim=1) + exp_neg.sum(dim=1) + 1e-8)
                 loss_cr = -torch.log(prob + 1e-8).mean()
             
-            lambda_ce = 0.5
+            lambda_ce = 1.0 
             total_loss = (lambda_ce * loss_ce) + loss_cr
             
             total_loss.backward()
@@ -111,15 +108,46 @@ def train():
             
             if batch_idx % 5 == 0:
                 print(f"Epoch: {epoch}, Batch: {batch_idx}, Total Loss: {total_loss.item():.4f} (CE: {loss_ce.item():.4f}, CR: {loss_cr.item():.4f})")
+            
+            if batch_idx % 50 == 0:
+                save_debug_image(pixels[0, 1], high_res_fd_mask[0, 1], pred_mask[0, 1], epoch, batch_idx)
+                print(f"Epoch: {epoch}, Batch: {batch_idx}, Total: {total_loss.item():.4f} (CE: {loss_ce.item():.4f}, CR: {loss_cr.item():.4f})")
                         
         os.makedirs("test_models", exist_ok=True)
-        checkpoint_path = os.path.join("test_models", f"attn_guide_lora_dino_epoch_{epoch}.pth")
+        checkpoint_path = os.path.join("test_models", f"physics_guide_lora_dino_epoch_{epoch}.pth")
         
         #save checkpoint every 10th epoch
         if (epoch + 1) % 10 == 0:
             save_state = model.module.state_dict() if num_gpus > 1 else model.state_dict()
             torch.save(save_state, checkpoint_path)
             print(f"Model saved to {checkpoint_path}")
+        
+        
+def save_debug_image(img_tensor, gt_mask, pred_mask, epoch, batch_idx):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    os.makedirs("train_debug", exist_ok=True)
+    
+    # Use .detach() before .cpu().numpy()
+    img = img_tensor.detach().cpu().permute(1, 2, 0).numpy()
+    img = (img * np.array([0.229, 0.224, 0.225])) + np.array([0.485, 0.456, 0.406])
+    img = np.clip(img, 0, 1)
+    
+    gt = gt_mask.detach().cpu().squeeze().numpy()
+    
+    # Detach here so F.interpolate doesn't try to track gradients
+    pred_upsampled = F.interpolate(pred_mask.detach().unsqueeze(0), size=(224, 224), mode='bilinear')
+    pred = pred_upsampled.cpu().squeeze().numpy()
+    
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    axes[0].imshow(img); axes[0].set_title("Input")
+    axes[1].imshow(gt, cmap='jet'); axes[1].set_title("Teacher Mask")
+    axes[2].imshow(pred, cmap='jet'); axes[2].set_title("Student Pred")
+    
+    plt.savefig(f"train_debug/epoch{epoch}_batch{batch_idx}.png")
+    plt.close(fig) # Explicitly close fig to save memory
+    
         
 if __name__ == "__main__":
     train()
