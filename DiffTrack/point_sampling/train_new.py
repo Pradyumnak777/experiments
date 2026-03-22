@@ -136,7 +136,7 @@ def train():
                 print(f"Epoch: {epoch}, Batch: {batch_idx}, Total Loss: {total_loss.item():.4f} (CE: {loss_ce.item():.4f}, CR: {loss_cr.item():.4f})")
         
         os.makedirs("test_models", exist_ok=True)
-        checkpoint_path = os.path.join("test_models", f"newv2_lora_dino_epoch_{epoch}.pth")
+        checkpoint_path = os.path.join("test_models", f"new3_lora_dino_epoch_{epoch}.pth")
         # Save checkpoint every 50th epoch (50, 100, ...)
         if (epoch + 1) % 10 == 0:
             # safeguard for DataParallel saving

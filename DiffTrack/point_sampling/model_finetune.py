@@ -55,7 +55,7 @@ class DINOv2_LoRA(nn.Module):
         }
         
 
-def get_robust_mask(flow, depth, threshold_multiplier=1.2, sigma=1.5):
+def get_robust_mask(flow, depth, threshold_multiplier=1.2, flow_weight=0.5, sigma=1.5):
     #flow shape: [b, t, 2, h, w]
     b, t, _, h, w = flow.shape
     
@@ -66,12 +66,13 @@ def get_robust_mask(flow, depth, threshold_multiplier=1.2, sigma=1.5):
     
     #calculate motion magnitude on the RELATIVE flow, not raw flow
     mag = torch.norm(relative_flow, dim=2, keepdim=True) #[b, t, 1, h, w]
+    squashed_mag = torch.sqrt(mag + 1e-8)
         
     #normalizing per frame- f_max: [b, t, 1, 1, 1]
     f_max = depth.flatten(2).max(dim=-1)[0].view(depth.shape[0], depth.shape[1], 1, 1, 1)
     depth_norm = depth / (f_max + 1e-8)
     
-    combined_score = mag * depth_norm
+    combined_score = (squashed_mag ** flow_weight) * depth_norm
     
     mean_score = combined_score.mean(dim=(3, 4), keepdim=True) 
     thresh = torch.clamp(mean_score * threshold_multiplier, min=0.01)
