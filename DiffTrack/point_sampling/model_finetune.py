@@ -5,13 +5,11 @@ from transformers import AutoModel
 from peft import LoraConfig, get_peft_model
 
 class DINOv2_LoRA(nn.Module):
-    def __init__(self, model_name='facebook/dinov2-base', r=8, lora_alpha=16):
+    def __init__(self, model_name='facebook/dinov2-with-registers-base', r=8, lora_alpha=16):
         super(DINOv2_LoRA, self).__init__()
         
-        #load the pre-trained backbone
-        self.backbone = AutoModel.from_pretrained(model_name)
+        self.backbone = AutoModel.from_pretrained(model_name, output_attentions=True)
         
-        #config lora to target the attention layers
         config = LoraConfig(
             r=r, 
             lora_alpha=lora_alpha,
@@ -22,61 +20,55 @@ class DINOv2_LoRA(nn.Module):
         
         self.model = get_peft_model(self.backbone, config)
         
-        #hanging to Conv2d, don't want cross-talk between the 2 different videos
         self.seg_head = nn.Sequential(
-            nn.Conv2d(768, 1, kernel_size=1), #1x1 conv looks at each patch independently
-            nn.Sigmoid() #output 0-1
+            nn.Conv2d(768, 1, kernel_size=1),
+            nn.Sigmoid()
         )
 
     def forward(self, x):
-        #x input shape: [b, t, 3, 224, 224]. NOW T=2, there are only 2 image pairs.
         b, t, c, h, w = x.shape
+        x = x.view(b * t, c, h, w) 
         
-        #squash b and t to process frames through dino in one go
-        x = x.view(b * t, c, h, w) #x is now [b*t, 3, 224, 224]
-        
-        #run through lora-wrapped dino
+        #fix: we no longer need to pass output_attentions=True here
         outputs = self.model(x)
-        features = outputs.last_hidden_state #[b*t, 257, 768]
+        features = outputs.last_hidden_state 
         
-        #grab patch tokens (ignore cls token at index 0)
-        patch_features = features[:, 1:, :].permute(0, 2, 1).contiguous().view(b * t, 768, 16, 16)
+        #skip 1 cls token + 4 register tokens
+        patch_features = features[:, 5:, :].permute(0, 2, 1).contiguous().view(b * t, 768, 16, 16)
+        pred_mask_flat = self.seg_head(patch_features) 
         
-        #fix: pass directly into the 2D head so it predicts masks for Video A and Video B independently
-        pred_mask_flat = self.seg_head(patch_features) #output- [b*t, 1, 16, 16]
-        
-        #reshape everything back to [B, T, ...] for the loss functions
         patch_features_unsq = patch_features.view(b, t, 768, 16, 16)
         pred_mask = pred_mask_flat.view(b, t, 1, 16, 16)
         
+        #this will now safely grab the 12th layer's attention
+        last_layer_attn = outputs.attentions[-1]
+        
         return {
             "patch_features": patch_features_unsq,
-            "pred_mask": pred_mask
+            "pred_mask": pred_mask,
+            "last_attn": last_layer_attn 
         }
-        
 
 def get_robust_mask(flow, depth, threshold_multiplier=1.2, flow_weight=0.5, sigma=1.5):
-    #flow shape: [b, t, 2, h, w]
     b, t, _, h, w = flow.shape
     
-    #find the median flow (the background speed) and subtract it
-    #flatten spatial dims, find median, reshape back for broadcasting
     median_flow = flow.view(b, t, 2, -1).median(dim=3, keepdim=True)[0].view(b, t, 2, 1, 1)
     relative_flow = flow - median_flow
     
-    #calculate motion magnitude on the RELATIVE flow, not raw flow
-    mag = torch.norm(relative_flow, dim=2, keepdim=True) #[b, t, 1, h, w]
+    mag = torch.norm(relative_flow, dim=2, keepdim=True)
     squashed_mag = torch.sqrt(mag + 1e-8)
         
-    #normalizing per frame- f_max: [b, t, 1, 1, 1]
     f_max = depth.flatten(2).max(dim=-1)[0].view(depth.shape[0], depth.shape[1], 1, 1, 1)
     depth_norm = depth / (f_max + 1e-8)
+    
+    # y = torch.linspace(-1, 1, h, device=flow.device).view(1, 1, 1, h, 1)
+    # x = torch.linspace(-1, 1, w, device=flow.device).view(1, 1, 1, 1, w)
+    # center_prior = torch.exp(-(x**2 + y**2) / (2 * 0.7**2))
     
     combined_score = (squashed_mag ** flow_weight) * depth_norm
     
     mean_score = combined_score.mean(dim=(3, 4), keepdim=True) 
     thresh = torch.clamp(mean_score * threshold_multiplier, min=0.01)
-    
     binary_mask = (combined_score > thresh).float()
     
     return binary_mask
