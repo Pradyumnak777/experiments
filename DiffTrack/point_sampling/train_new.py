@@ -28,7 +28,6 @@ seed_everything()
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    #using the clean hybrid dataset
     dataset = UCFRep_finetune(
         mp4_dir="UCF_Rep/train",
         pt_dir="ucfrep_intermediate_dataset"
@@ -62,7 +61,7 @@ def train():
             patch_features = outputs["patch_features"]
             pred_mask = outputs["pred_mask"]
 
-            #1. THE PHYSICS MASK (used for both teachers)
+            #1- FLOW MASK!
             high_res_fd_mask = get_robust_mask(flow) #[b, t, 1, 224, 224]
             high_res_fd_flat = high_res_fd_mask.view(b * t, 1, 224, 224)
             
@@ -70,18 +69,18 @@ def train():
             target_low = F.interpolate(high_res_fd_flat, size=(16, 16), mode='nearest')
             target_low = target_low.view(b, t, 1, 16, 16)
             
-            #2. CROSS ENTROPY BRANCH
+            #2- CROSS ENTROPY
             #teaches the seg_head to find the moving actor
             loss_ce = F.binary_cross_entropy(pred_mask, target_low)
                         
-            #3. CONTRASTIVE BRANCH
+            #3- USING SAME FLOW MASK TO DO CONTRASTIVE LEARNING TOO
             #teaches the lora weights to temporally group those actor features
-            features_flat = patch_features.permute(0, 1, 3, 4, 2).reshape(-1, 768) 
+            features_flat = patch_features.permute(0, 1, 3, 4, 2).reshape(-1, 768)  #b*t, 768, 16, 16
             features_flat = F.normalize(features_flat, dim=1)
             cr_mask_flat = target_low.view(-1)
             
-            actor_vectors = features_flat[cr_mask_flat == 1]
-            bg_vectors = features_flat[cr_mask_flat == 0]
+            actor_vectors = features_flat[cr_mask_flat == 1] #actor patches where flow_mask gives high values
+            bg_vectors = features_flat[cr_mask_flat == 0]#bg patches where flow mask has low value..
             
             loss_cr = torch.tensor(0.0, device=device)
             

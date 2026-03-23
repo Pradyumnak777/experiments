@@ -178,7 +178,7 @@ class UCFRep_finetune(Dataset):
             chunk_depth = []
             
             for i in range(start_idx, start_idx + chunk_size):
-                #multiply by 2 because our stride was 2
+                #multiply by 2 because stride was 2
                 frame = self._get_single_frame(mp4_path, i * 2)
                 chunk_pixels.append(frame)
                 chunk_flow.append(all_flow[i])

@@ -20,7 +20,8 @@ if root not in sys.path:
 from utils.depth_exp import get_batch_depth
 
 checkpoint_path = "test_models/physics_guide_lora_dino_epoch_9.pth" 
-video_path = "UCF_Rep/val/v_BenchPress_g22_c01.mp4"
+video_path = "UCF_Rep/val/v_PommelHorse_g25_c04.mp4"
+# video_path = "vids_mp4/3tIXySyb2Vw_25.0_27.2.mp4"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #raft transforms for the flow teacher
@@ -124,14 +125,14 @@ def visualize():
     t_map = teacher_mask[0, idx, 0].cpu().numpy()
     axes[1].imshow(raw_frames[idx])
     axes[1].imshow(t_map, cmap='jet', alpha=0.5)
-    axes[1].set_title("on-the-fly physics teacher")
+    axes[1].set_title("flow mask")
     axes[1].axis('off')
 
     #student
     s_map = F.interpolate(pred_mask[0, idx].unsqueeze(0), size=(224, 224), mode='bilinear').squeeze().cpu().numpy()
     axes[2].imshow(raw_frames[idx])
     axes[2].imshow(s_map, cmap='jet', alpha=0.5)
-    axes[2].set_title("student (seg head)")
+    axes[2].set_title("dino finetune")
     axes[2].axis('off')
 
     plt.tight_layout()

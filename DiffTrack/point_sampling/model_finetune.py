@@ -19,7 +19,7 @@ class DINOv2_LoRA(nn.Module):
             bias="none"
         )
         
-        self.model = get_peft_model(self.backbone, config)
+        self.model = get_peft_model(self.backbone, config) #searches dino for Q,K,V matrices and injects adaptation..
         
         self.seg_head = nn.Sequential(
             nn.Conv2d(768, 1, kernel_size=1),
@@ -30,7 +30,6 @@ class DINOv2_LoRA(nn.Module):
         b, t, c, h, w = x.shape
         x = x.view(b * t, c, h, w) 
         
-        #fix: we no longer need to pass output_attentions=True here
         outputs = self.model(x)
         features = outputs.last_hidden_state 
         
@@ -47,53 +46,52 @@ class DINOv2_LoRA(nn.Module):
         return {
             "patch_features": patch_features_unsq,
             "pred_mask": pred_mask,
-            "last_attn": last_layer_attn 
+            "last_attn": last_layer_attn  #not being used..!
         }
 
 def get_robust_mask(flow, threshold_multiplier=1.2, flow_weight=0.6):
-    # flow: [b, t, 2, h, w], depth: [b, t, 1, h, w]
     b, t, _, h, w = flow.shape
     device = flow.device
     # depth = depth.squeeze(2) # [b, t, h, w]
 
-    # 1. Compute Relative Flow (Cancels Camera Pan)
+    #median flow, then calculate relative flow
     median_flow = flow.view(b, t, 2, -1).median(dim=3, keepdim=True)[0].view(b, t, 2, 1, 1)
     rel_flow = flow - median_flow
     
-    # 2. Extract Relative Magnitude and Angle
+    
     rel_mag = torch.norm(rel_flow, dim=2) # [b, t, h, w]
     # atan2(v, u) gives the relative direction of motion
-    rel_angle = torch.atan2(rel_flow[:, :, 1], rel_flow[:, :, 0]) 
+    rel_angle = torch.atan2(rel_flow[:, :, 1], rel_flow[:, :, 0])  #get directions
 
-    # 3. Angle Consistency Filter (The "Human Heading" Rule)
-    # Background noise has chaotic angles. Actors move in a consistent heading.
-    # We calculate the change in angle between frames.
+    #this is a heauristic..
+    '''
+    Angle differences between frames. If the angle stays consistent between these 3 consecutive frames, then it is given
+    a "high score". If there is chaotic jitter every few frames, it is likely not an action..
+    '''
     angle_diff_t = torch.abs(rel_angle[:, 1:] - rel_angle[:, :-1])
     # Handle the pi/-pi wrap around
     angle_diff_t = torch.where(angle_diff_t > np.pi, 2*np.pi - angle_diff_t, angle_diff_t)
     
-    # A consistency score: 1.0 if perfectly consistent, 0.0 if direction flipped 180 degrees
-    # We pad the first frame to keep the t=3 dimension
     angle_consistency = torch.cos(angle_diff_t) # High for small angle changes
-    angle_consistency = F.pad(angle_consistency, (0,0,0,0,1,0), value=1.0)
+    angle_consistency = F.pad(angle_consistency, (0,0,0,0,1,0), value=1.0) #pad extra frame, as only 2 difference frames are obtained
     angle_consistency = torch.clamp(angle_consistency, min=0.1)
 
-    # 4. Temporal Smoothing & Depth
+    #
     smooth_mag = rel_mag.mean(dim=1, keepdim=True).expand(-1, t, -1, -1)
     mag_norm = smooth_mag / (smooth_mag.view(b, t, -1).max(dim=-1)[0].view(b, t, 1, 1) + 1e-8)
     
-    # f_max = depth.view(b, t, -1).max(dim=-1)[0].view(b, t, 1, 1)
-    # depth_norm = depth / (f_max + 1e-8)
-
-    # 5. Final Physics Score
-    # Multiplies relative motion, directional consistency, and depth
+    #score
     score = (mag_norm ** flow_weight) * (angle_consistency ** 2)
     
-    # Thresholding
+    #threshold
     mean_score = score.mean(dim=(2, 3), keepdim=True)
     thresh = torch.clamp(mean_score * 1.4, min=0.06)
     binary_mask = (score > thresh).float()
     
+    #border edges..black borders..
+    '''
+    alternative- recognize. by pixelc olor? pitch black at border..ignore?
+    '''
     border_h = int(h * 0.05)
     border_w = int(w * 0.05)
     spatial_mask = torch.ones_like(binary_mask)
