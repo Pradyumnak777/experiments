@@ -12,6 +12,16 @@ from torchvision.models.optical_flow import raft_large
 from torchvision.transforms import v2
 import sys
 from depth_anything_3.api import DepthAnything3
+import random
+
+seed = 42
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if root not in sys.path:
@@ -20,8 +30,8 @@ if root not in sys.path:
 from utils.depth_exp import get_batch_depth
 
 checkpoint_path = "test_models/physics_guide_lora_dino_epoch_9.pth" 
-video_path = "UCF_Rep/val/v_PommelHorse_g25_c04.mp4"
-# video_path = "vids_mp4/3tIXySyb2Vw_25.0_27.2.mp4"
+# video_path = "UCF_Rep/val/v_FrontCrawl_g23_c01.mp4"
+video_path = "vids_mp4/-0HwkO7TRmc_35.138472_39.943277.mp4"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #raft transforms for the flow teacher
@@ -67,7 +77,6 @@ def visualize():
         ret, frame = cap.read()
         if not ret: break
         
-        # FIX 1: read and discard the next frame to match stride=2
         cap.read() 
         
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

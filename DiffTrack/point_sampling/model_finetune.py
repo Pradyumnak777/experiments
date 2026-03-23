@@ -49,7 +49,7 @@ class DINOv2_LoRA(nn.Module):
             "last_attn": last_layer_attn  #not being used..!
         }
 
-def get_robust_mask(flow, threshold_multiplier=1.2, flow_weight=0.6):
+def get_robust_mask(flow, threshold_multiplier=1.2, flow_weight=0.6): #lower weight and also check??
     b, t, _, h, w = flow.shape
     device = flow.device
     # depth = depth.squeeze(2) # [b, t, h, w]
