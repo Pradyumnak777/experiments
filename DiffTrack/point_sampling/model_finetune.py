@@ -55,13 +55,13 @@ def get_robust_mask(flow, threshold_multiplier=1.2, flow_weight=0.6): #lower wei
     # depth = depth.squeeze(2) # [b, t, h, w]
 
     #median flow, then calculate relative flow
-    median_flow = flow.view(b, t, 2, -1).median(dim=3, keepdim=True)[0].view(b, t, 2, 1, 1)
-    rel_flow = flow - median_flow
+    median_flow = flow.view(b, t, 2, -1).median(dim=3, keepdim=True)[0].view(b, t, 2, 1, 1) #median for both u and v..
+    rel_flow = flow - median_flow # "relative" flow..
     
     
     rel_mag = torch.norm(rel_flow, dim=2) # [b, t, h, w]
     # atan2(v, u) gives the relative direction of motion
-    rel_angle = torch.atan2(rel_flow[:, :, 1], rel_flow[:, :, 0])  #get directions
+    rel_angle = torch.atan2(rel_flow[:, :, 1], rel_flow[:, :, 0])  #get the a ngle wrt positive x axis (by default)
 
     #this is a heauristic..
     '''
@@ -69,7 +69,7 @@ def get_robust_mask(flow, threshold_multiplier=1.2, flow_weight=0.6): #lower wei
     a "high score". If there is chaotic jitter every few frames, it is likely not an action..
     '''
     angle_diff_t = torch.abs(rel_angle[:, 1:] - rel_angle[:, :-1])
-    # Handle the pi/-pi wrap around
+    # Handle the pi/-pi wrap around (hapens in 360 deg rotations..)
     angle_diff_t = torch.where(angle_diff_t > np.pi, 2*np.pi - angle_diff_t, angle_diff_t)
     
     angle_consistency = torch.cos(angle_diff_t) # High for small angle changes
@@ -77,15 +77,15 @@ def get_robust_mask(flow, threshold_multiplier=1.2, flow_weight=0.6): #lower wei
     angle_consistency = torch.clamp(angle_consistency, min=0.1)
 
     #
-    smooth_mag = rel_mag.mean(dim=1, keepdim=True).expand(-1, t, -1, -1)
-    mag_norm = smooth_mag / (smooth_mag.view(b, t, -1).max(dim=-1)[0].view(b, t, 1, 1) + 1e-8)
+    smooth_mag = rel_mag.mean(dim=1, keepdim=True).expand(-1, t, -1, -1) #avg magnitued over the frames
+    mag_norm = smooth_mag / (smooth_mag.view(b, t, -1).max(dim=-1)[0].view(b, t, 1, 1) + 1e-8) #normalize
     
     #score
     score = (mag_norm ** flow_weight) * (angle_consistency ** 2)
     
     #threshold
     mean_score = score.mean(dim=(2, 3), keepdim=True)
-    thresh = torch.clamp(mean_score * 1.4, min=0.06)
+    thresh = torch.clamp(mean_score * 1.4, min=0.06) #anything b/w mean*1.4 and 0.06
     binary_mask = (score > thresh).float()
     
     #border edges..black borders..
