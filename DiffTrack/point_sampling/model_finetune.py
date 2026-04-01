@@ -81,10 +81,10 @@ def get_robust_mask(flow, threshold_multiplier=1.2, flow_weight=0.6): #lower wei
     mag_norm = smooth_mag / (smooth_mag.view(b, t, -1).max(dim=-1)[0].view(b, t, 1, 1) + 1e-8) #normalize
     
     #score
-    score = (mag_norm ** flow_weight) * (angle_consistency ** 2)
+    score = (mag_norm ** flow_weight) * (angle_consistency ** 2) #mean is assigned to every h*w , pixel
     
     #threshold
-    mean_score = score.mean(dim=(2, 3), keepdim=True)
+    mean_score = score.mean(dim=(2, 3), keepdim=True) #avg score across all pixels
     thresh = torch.clamp(mean_score * 1.4, min=0.06) #anything b/w mean*1.4 and 0.06
     binary_mask = (score > thresh).float()
     
