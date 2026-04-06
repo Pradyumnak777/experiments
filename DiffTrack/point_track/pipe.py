@@ -23,7 +23,7 @@ from torchvision.transforms import v2
 
 
 
-video_path = "UCF_Rep/val/v_Rowing_g23_c04.mp4"
+video_path = "UCF_Rep/val/v_BreastStroke_g24_c01.mp4"
 if not os.path.isfile(video_path):
     raise FileNotFoundError(f"Video not found: {video_path}")
 
@@ -49,7 +49,7 @@ raft_transform = v2.Compose([
 
 def build_three_frame_chunk_from_loaded_frames(
     frames_np,
-    start_frame=2,
+    start_frame=40,
     stride=2,
     num_frames=3,
     target_size=(224, 224),
@@ -113,7 +113,11 @@ model.eval()
 
 raft_model = raft_large(pretrained=True, progress=False).to(device).eval()
 
-start_f = 2 #pick a frame in the middle
+'''
+FRAME POSITION MATTERS! IS THERE A WAY TO AUTOMATE THIS???
+'''
+
+start_f = 20 #pick a frame in the middle
 
 raw_frames, pixel_frames = build_three_frame_chunk_from_loaded_frames(
     frames,
