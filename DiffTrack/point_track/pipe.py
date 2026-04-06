@@ -23,7 +23,7 @@ from torchvision.transforms import v2
 
 
 
-video_path = "UCF_Rep/val/v_BreastStroke_g24_c01.mp4"
+video_path = "UCF_Rep/val/v_PommelHorse_g24_c01.mp4"
 if not os.path.isfile(video_path):
     raise FileNotFoundError(f"Video not found: {video_path}")
 
