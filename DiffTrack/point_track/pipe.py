@@ -1,4 +1,5 @@
 import os
+import pickle
 import torch
 import imageio.v3 as iio
 import sys
@@ -23,7 +24,7 @@ from torchvision.transforms import v2
 
 
 
-video_path = "UCF_Rep/val/v_PommelHorse_g24_c01.mp4"
+video_path = "UCF_Rep/val/v_BodyWeightSquats_g21_c04.mp4"
 if not os.path.isfile(video_path):
     raise FileNotFoundError(f"Video not found: {video_path}")
 
@@ -220,6 +221,22 @@ else:
         f"Using {queries.shape[1]} custom queries from mask frame {query_frame} (threshold={mask_threshold:.4f})"
     )
     pred_tracks, pred_visibility = cotracker(video, queries=queries)
+
+tracks_name = f"{input_name}_trajectories_frame_{query_frame}.pkl"
+tracks_path = os.path.join(save_dir, tracks_name)
+with open(tracks_path, "wb") as file_handle:
+    pickle.dump(
+        {
+            "video_path": video_path,
+            "query_frame": int(query_frame),
+            "mask_threshold": float(mask_threshold),
+            "tracks": pred_tracks.detach().cpu().numpy(),
+            "visibility": pred_visibility.detach().cpu().numpy(),
+            "fps": float(source_fps),
+        },
+        file_handle,
+    )
+print(f"Saved trajectories to {tracks_path}")
 
 vis = Visualizer(save_dir=save_dir, pad_value=0, linewidth=1, fps=source_fps)
 vis.visualize(video, pred_tracks, pred_visibility, filename=out_name)
