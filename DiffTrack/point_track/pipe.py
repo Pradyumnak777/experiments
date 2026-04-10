@@ -8,7 +8,9 @@ from collections import OrderedDict
 import torch.nn.functional as F
 from matplotlib import cm
 
-
+GPU_ID = 1  
+if torch.cuda.is_available():
+    torch.cuda.set_device(GPU_ID)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 COTRACKER_ROOT = Path(__file__).resolve().parent / "co-tracker"
@@ -24,7 +26,7 @@ from torchvision.transforms import v2
 
 
 
-video_path = "UCF_Rep/val/v_BodyWeightSquats_g21_c04.mp4"
+video_path = "UCF_Rep/val/v_BodyWeightSquats_g22_c03.mp4"
 if not os.path.isfile(video_path):
     raise FileNotFoundError(f"Video not found: {video_path}")
 
