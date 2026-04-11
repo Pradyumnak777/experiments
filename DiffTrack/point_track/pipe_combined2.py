@@ -14,11 +14,11 @@ import torch_geometric
 from matplotlib import cm
 from PIL import Image, ImageDraw
 import matplotlib.pyplot as plt
+import cv2
 
-GPU_ID = 1  
+GPU_ID = 1
 if torch.cuda.is_available():
     torch.cuda.set_device(GPU_ID)
-
 
 # setup paths
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -37,8 +37,8 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # ------------------------------------------------------------
 # hardcoded paths
 # ------------------------------------------------------------
-video_coach_path = "UCF_Rep/val/v_BenchPress_g22_c01.mp4"
-video_student_path = "UCF_Rep/val/v_BenchPress_g23_c01.mp4"
+video_coach_path = "UCF_Rep/val/v_PlayingCello_g22_c01.mp4"
+video_student_path = "UCF_Rep/val/v_PlayingCello_g23_c06.mp4"
 
 if not os.path.isfile(video_coach_path) or not os.path.isfile(video_student_path):
     raise FileNotFoundError("one or both videos not found")
@@ -64,11 +64,11 @@ mask_frame_idx = 1
 query_frame_coach = start_f_coach + (mask_frame_idx * 2)
 query_frame_student = start_f_student + (mask_frame_idx * 2)
 
-mask_threshold = 0.1
-max_query_points = 70
-pre_fps_pool_size = 500
+mask_threshold = 0.15
+max_query_points = 30
+pre_fps_pool_size = 1000
 target_radius = 0
-mutual_only = True
+mutual_only = False
 
 raft_transform = v2.Compose([
     v2.ConvertImageDtype(torch.float32),
@@ -90,12 +90,18 @@ fps_student = float(meta_student.get("fps", 30))
 video_tensor_coach = torch.tensor(frames_coach).permute(0, 3, 1, 2)[None].float().to(device)
 video_tensor_student = torch.tensor(frames_student).permute(0, 3, 1, 2)[None].float().to(device)
 
-
 # ------------------------------------------------------------
 # helpers
 # ------------------------------------------------------------
-
-
+def extract_plain_dino_patch_features(dino_model, pixel_frames, frame_idx=1, patch_grid=16):
+    img = pixel_frames[frame_idx:frame_idx + 1]
+    with torch.no_grad():
+        out = dino_model.forward_features(img)
+        patch_tokens = out["x_norm_patchtokens"]
+    _, n, c = patch_tokens.shape
+    assert n == patch_grid * patch_grid, f"expected {patch_grid*patch_grid} patches, got {n}"
+    feat_hwc = patch_tokens[0].reshape(patch_grid, patch_grid, c).contiguous()
+    return feat_hwc
 
 
 def build_three_frame_chunk(frames_np, start_frame=20, stride=2, num_frames=3, target_size=(224, 224)):
@@ -182,7 +188,6 @@ class ImageGraph:
     def adjust_weights_via_feature_differences(self, feat_hwc, use_dino=True):
         h, w, c = feat_hwc.shape
         num_nodes = h * w
-
         edge_index = self.graph.edge_index.to(feat_hwc.device)
 
         if use_dino:
@@ -204,7 +209,6 @@ class ImageGraph:
 
         feat_values = torch.exp(-torch.square(feat_values) / sigma_f)
         spatial_values = torch.exp(-torch.square(spatial_values) / sigma_s)
-
         self.graph.edge_attr = feat_values * spatial_values
 
 
@@ -250,11 +254,9 @@ class Laplacian:
 
 def solve_functional_map_cvx(proj_src, proj_tgt):
     k = proj_src.shape[0]
-
     F_var = cp.Variable((k, k))
     src_np = proj_src.detach().cpu().numpy()
     tgt_np = proj_tgt.detach().cpu().numpy()
-
     residual = cp.norm(F_var @ src_np - tgt_np, "fro")
     problem = cp.Problem(cp.Minimize(residual), [F_var >= 0])
     problem.solve()
@@ -310,7 +312,7 @@ class FunctionalMap:
         best_tgt = sim.argmax(dim=1)
         best_score = sim.max(dim=1).values
 
-        top2_vals, top2_idx = torch.topk(sim, k=min(2, sim.shape[1]), dim=1)
+        top2_vals, _ = torch.topk(sim, k=min(2, sim.shape[1]), dim=1)
         margin = top2_vals[:, 0] - top2_vals[:, 1] if sim.shape[1] > 1 else top2_vals[:, 0]
 
         return best_tgt, best_score, margin, sim
@@ -384,91 +386,124 @@ def save_pair_overlay(img1, img2, pts1, pts2, out_path):
         draw.line((x1, y1, x2s, y2), fill=(0, 255, 0), width=1)
 
     canvas.save(out_path)
-    
-def save_side_by_side_fmap_overlay(
-    raw_coach_frame,
-    raw_student_frame,
-    coach_patch_values,
-    src_to_tgt,
-    src_patch_scores=None,
-    out_path="fmap_side_by_side.png",
-    patch_grid=16,
-    alpha=0.45,
-    coach_cmap="magma",
-    student_cmap="viridis",
-):
-    """
-    Creates ONE png:
-      left  = coach frame with source-side FMAP heatmap overlay
-      right = student frame with target-side accumulated FMAP heatmap overlay
 
-    Inputs:
-      raw_coach_frame:  (H,W,3) uint8
-      raw_student_frame:(H,W,3) uint8
-      coach_patch_values: (patch_grid*patch_grid,) source-side heat values
-                         typically src_margin or src_score
-      src_to_tgt: (patch_grid*patch_grid,) source patch -> target patch
-      src_patch_scores: optional (patch_grid*patch_grid,)
-                        if given, used to accumulate weighted mass on target side
-                        otherwise uses coach_patch_values
-    """
-    H, W, _ = raw_coach_frame.shape
+
+def build_smooth_rainbow_image(height, width):
+    ys = np.linspace(-1.0, 1.0, height)
+    xs = np.linspace(-1.0, 1.0, width)
+    xx, yy = np.meshgrid(xs, ys)
+
+    angle = np.arctan2(yy, xx) / (2 * np.pi) + 0.5
+    radius = np.sqrt(xx**2 + yy**2)
+    radius = np.clip(radius, 0.0, 1.0)
+
+    hsv = np.zeros((height, width, 3), dtype=np.float32)
+    hsv[..., 0] = angle
+    hsv[..., 1] = 0.25 + 0.75 * radius
+    hsv[..., 2] = 1.0
+
+    rgb = cv2.cvtColor((hsv * 255).astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32) / 255.0
+    return rgb
+
+
+def image_to_patch_colors(rgb_image, patch_grid=16):
+    H, W, _ = rgb_image.shape
+    ph = H // patch_grid
+    pw = W // patch_grid
+
+    patch_colors = []
+    for py in range(patch_grid):
+        for px in range(patch_grid):
+            y0 = py * ph
+            y1 = (py + 1) * ph
+            x0 = px * pw
+            x1 = (px + 1) * pw
+            patch = rgb_image[y0:y1, x0:x1]
+            patch_colors.append(patch.mean(axis=(0, 1)))
+
+    patch_colors = np.stack(patch_colors, axis=0)
+    return patch_colors
+
+
+def patch_colors_to_image(patch_colors, patch_grid=16, out_size=224, mode="bilinear"):
+    patch_map = torch.tensor(
+        patch_colors.reshape(patch_grid, patch_grid, 3),
+        dtype=torch.float32,
+        device=device,
+    )
+    patch_map = patch_map.permute(2, 0, 1).unsqueeze(0)
+    patch_map = F.interpolate(
+        patch_map,
+        size=(out_size, out_size),
+        mode=mode,
+        align_corners=False if mode in ["bilinear", "bicubic"] else None,
+    )
+    patch_map = patch_map.squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
+    patch_map = np.clip(patch_map, 0.0, 1.0)
+    patch_map = (patch_map * 255).astype(np.uint8)
+    return patch_map
+
+
+def save_smooth_fullimage_correspondence_plot(
+    raw_source_frame,
+    raw_target_frame,
+    src_to_tgt,
+    out_path,
+    patch_grid=16,
+    upsample_to=224,
+):
+    H, W, _ = raw_target_frame.shape
     N = patch_grid * patch_grid
 
-    if src_patch_scores is None:
-        src_patch_scores = coach_patch_values
+    target_rainbow_full = build_smooth_rainbow_image(H, W)
+    tgt_patch_colors = image_to_patch_colors(target_rainbow_full, patch_grid=patch_grid)
 
-    # ---------- coach heatmap ----------
-    coach_heat = coach_patch_values.reshape(patch_grid, patch_grid)
-    coach_heat = coach_heat - coach_heat.min()
-    coach_heat = coach_heat / (coach_heat.max() + 1e-8)
+    src_patch_colors = np.ones((N, 3), dtype=np.float32)
+    for s_idx in range(N):
+        t_idx = int(src_to_tgt[s_idx].item())
+        src_patch_colors[s_idx] = tgt_patch_colors[t_idx]
 
-    coach_heat_up = F.interpolate(
-        coach_heat.unsqueeze(0).unsqueeze(0),
-        size=(H, W),
-        mode="nearest"
-    ).squeeze(0).squeeze(0).detach().cpu().numpy()
-
-    coach_color = (cm.get_cmap(coach_cmap)(coach_heat_up)[..., :3] * 255.0).astype(np.float32)
-    coach_frame = raw_coach_frame.astype(np.float32)
-    coach_overlay = (coach_frame * (1.0 - alpha) + coach_color * alpha).clip(0, 255).astype(np.uint8)
-
-    # ---------- student accumulated heatmap ----------
-    tgt_heat_flat = torch.zeros((N,), device=src_to_tgt.device, dtype=torch.float32)
+    tgt_color_sum = np.zeros((N, 3), dtype=np.float32)
+    tgt_color_count = np.zeros((N, 1), dtype=np.float32)
 
     for s_idx in range(N):
-        t_idx = src_to_tgt[s_idx].item()
-        tgt_heat_flat[t_idx] += src_patch_scores[s_idx]
+        t_idx = int(src_to_tgt[s_idx].item())
+        tgt_color_sum[t_idx] += src_patch_colors[s_idx]
+        tgt_color_count[t_idx] += 1.0
 
-    tgt_heat = tgt_heat_flat.reshape(patch_grid, patch_grid)
-    tgt_heat = tgt_heat - tgt_heat.min()
-    tgt_heat = tgt_heat / (tgt_heat.max() + 1e-8)
+    tgt_patch_colors_mapped = np.ones((N, 3), dtype=np.float32)
+    valid = tgt_color_count.squeeze(-1) > 0
+    tgt_patch_colors_mapped[valid] = tgt_color_sum[valid] / tgt_color_count[valid]
 
-    tgt_heat_up = F.interpolate(
-        tgt_heat.unsqueeze(0).unsqueeze(0),
-        size=(H, W),
-        mode="nearest"
-    ).squeeze(0).squeeze(0).detach().cpu().numpy()
+    src_vis = patch_colors_to_image(
+        src_patch_colors,
+        patch_grid=patch_grid,
+        out_size=upsample_to,
+        mode="bilinear",
+    )
+    tgt_vis = patch_colors_to_image(
+        tgt_patch_colors_mapped,
+        patch_grid=patch_grid,
+        out_size=upsample_to,
+        mode="bilinear",
+    )
 
-    student_color = (cm.get_cmap(student_cmap)(tgt_heat_up)[..., :3] * 255.0).astype(np.float32)
-    student_frame = raw_student_frame.astype(np.float32)
-    student_overlay = (student_frame * (1.0 - alpha) + student_color * alpha).clip(0, 255).astype(np.uint8)
+    raw_source = raw_source_frame.astype(np.uint8)
+    raw_target = raw_target_frame.astype(np.uint8)
 
-    # ---------- side by side ----------
-    canvas = np.ones((max(coach_overlay.shape[0], student_overlay.shape[0]),
-                      coach_overlay.shape[1] + student_overlay.shape[1], 3), dtype=np.uint8) * 255
-
-    canvas[:coach_overlay.shape[0], :coach_overlay.shape[1]] = coach_overlay
-    canvas[:student_overlay.shape[0], coach_overlay.shape[1]:coach_overlay.shape[1] + student_overlay.shape[1]] = student_overlay
+    canvas = np.ones((upsample_to, upsample_to * 4, 3), dtype=np.uint8) * 255
+    canvas[:, 0:upsample_to] = raw_source
+    canvas[:, upsample_to:2*upsample_to] = src_vis
+    canvas[:, 2*upsample_to:3*upsample_to] = raw_target
+    canvas[:, 3*upsample_to:4*upsample_to] = tgt_vis
 
     iio.imwrite(out_path, canvas)
-
 
 # ------------------------------------------------------------
 # main
 # ------------------------------------------------------------
-print("loading custom dino and raft models...")
-model = DINOv2_LoRA().to(device)
+print("loading mask model, plain DINO, and RAFT...")
+mask_model = DINOv2_LoRA().to(device)
 model_path = "test_models/physics_guide_lora_dino_epoch_9.pth"
 state_dict = torch.load(model_path, map_location=device, weights_only=True)
 
@@ -477,9 +512,10 @@ for k, v in state_dict.items():
     name = k[7:] if k.startswith("module.") else k
     new_state_dict[name] = v
 
-model.load_state_dict(new_state_dict)
-model.eval()
+mask_model.load_state_dict(new_state_dict)
+mask_model.eval()
 
+plain_dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14").to(device).eval()
 raft_model = raft_large(pretrained=True, progress=False).to(device).eval()
 
 raw_coach, px_coach = build_three_frame_chunk(frames_coach, start_frame=start_f_coach)
@@ -490,7 +526,6 @@ flow_list = []
 for i in range(2):
     img1 = raft_transform(torch.from_numpy(raw_coach[i]).permute(2, 0, 1)).to(device).unsqueeze(0)
     img2 = raft_transform(torch.from_numpy(raw_coach[i + 1]).permute(2, 0, 1)).to(device).unsqueeze(0)
-
     with torch.no_grad():
         list_of_flows = raft_model(img1, img2)
         flow_res = F.interpolate(list_of_flows[-1], size=(224, 224), mode="bilinear", align_corners=False)
@@ -499,30 +534,44 @@ for i in range(2):
 flow_list.append(flow_list[-1].clone())
 flow_tensor = torch.stack(flow_list)
 
-print("running dino inference...")
+print("running mask-model inference...")
 with torch.no_grad():
-    out_coach = model(px_coach.unsqueeze(0))
-    out_student = model(px_student.unsqueeze(0))
+    out_coach = mask_model(px_coach.unsqueeze(0))
+    out_student = mask_model(px_student.unsqueeze(0))
 
 pred_mask_coach = out_coach["pred_mask"]
-feat_coach = out_coach["patch_features"][:, mask_frame_idx]    # (1,C,16,16)
-feat_student = out_student["patch_features"][:, mask_frame_idx]  # (1,C,16,16)
+pred_mask_student = out_student["pred_mask"]
 
-pred_mask_224 = F.interpolate(pred_mask_coach[0], size=(224, 224), mode="bilinear", align_corners=False)
-mask_map = pred_mask_224[mask_frame_idx, 0]
-save_mask_overlay(raw_coach[mask_frame_idx], mask_map.detach().cpu().numpy().astype("float32"),
-                  os.path.join(save_dir, f"{coach_name}_mask_overlay.png"))
-save_mask_overlay(raw_student[mask_frame_idx], mask_map.detach().cpu().numpy().astype("float32"),
-                  os.path.join(save_dir, f"{student_name}_mask_overlay.png"))
+pred_mask_coach_224 = F.interpolate(
+    pred_mask_coach[0], size=(224, 224), mode="bilinear", align_corners=False
+)
+pred_mask_student_224 = F.interpolate(
+    pred_mask_student[0], size=(224, 224), mode="bilinear", align_corners=False
+)
 
-# ------------------------------------------------------------
-# build NEW dense correspondence first
-# ------------------------------------------------------------
+mask_map_coach = pred_mask_coach_224[mask_frame_idx, 0]
+mask_map_student = pred_mask_student_224[mask_frame_idx, 0]
+
+save_mask_overlay(
+    raw_coach[mask_frame_idx],
+    mask_map_coach.detach().cpu().numpy().astype("float32"),
+    os.path.join(save_dir, f"{coach_name}_mask_overlay.png"),
+)
+save_mask_overlay(
+    raw_student[mask_frame_idx],
+    mask_map_student.detach().cpu().numpy().astype("float32"),
+    os.path.join(save_dir, f"{student_name}_mask_overlay.png"),
+)
+
+print("extracting plain DINO features for correspondence...")
+feat_coach_hwc = extract_plain_dino_patch_features(
+    plain_dino, px_coach, frame_idx=mask_frame_idx, patch_grid=PATCH_GRID
+)
+feat_student_hwc = extract_plain_dino_patch_features(
+    plain_dino, px_student, frame_idx=mask_frame_idx, patch_grid=PATCH_GRID
+)
+
 print("building FMAP-based dense correspondence first...")
-
-feat_coach_hwc = feat_coach[0].permute(1, 2, 0).contiguous()     # (16,16,C)
-feat_student_hwc = feat_student[0].permute(1, 2, 0).contiguous() # (16,16,C)
-
 feat_coach_copca, feat_student_copca = co_pca_pair(
     feat_coach_hwc,
     feat_student_hwc,
@@ -538,32 +587,34 @@ fmap_model = FunctionalMap(
 src_to_tgt, src_score, src_margin, src_sim = fmap_model.get_pointwise_map()
 tgt_to_src, tgt_score, tgt_sim = fmap_model.get_reverse_pointwise_map()
 
-print("saving side-by-side FMAP overlay...")
-
-save_side_by_side_fmap_overlay(
-    raw_coach_frame=raw_coach[mask_frame_idx],
-    raw_student_frame=raw_student[mask_frame_idx],
-    coach_patch_values=src_margin,          # or src_score
+print("saving smooth full-image correspondence plot...")
+save_smooth_fullimage_correspondence_plot(
+    raw_source_frame=raw_coach[mask_frame_idx],
+    raw_target_frame=raw_student[mask_frame_idx],
     src_to_tgt=src_to_tgt,
-    src_patch_scores=src_score,            # target accumulation weighted by source confidence
-    out_path=os.path.join(save_dir, "fmap_side_by_side_overlay.png"),
+    out_path=os.path.join(save_dir, "smooth_fullimage_correspondence.png"),
     patch_grid=PATCH_GRID,
-    alpha=0.45,
-    coach_cmap="magma",
-    student_cmap="viridis",
+    upsample_to=IMG_SIZE,
 )
 
 # ------------------------------------------------------------
 # restrict candidates using coach mask AFTER correspondence exists
 # ------------------------------------------------------------
-mask_patch = F.interpolate(
-    mask_map.unsqueeze(0).unsqueeze(0),
+mask_patch_coach = F.interpolate(
+    mask_map_coach.unsqueeze(0).unsqueeze(0),
     size=(PATCH_GRID, PATCH_GRID),
     mode="bilinear",
     align_corners=False,
 ).squeeze(0).squeeze(0)
 
-candidate_patch_idx = torch.nonzero(mask_patch > mask_threshold, as_tuple=False)
+mask_patch_student = F.interpolate(
+    mask_map_student.unsqueeze(0).unsqueeze(0),
+    size=(PATCH_GRID, PATCH_GRID),
+    mode="bilinear",
+    align_corners=False,
+).squeeze(0).squeeze(0)
+
+candidate_patch_idx = torch.nonzero(mask_patch_coach > mask_threshold, as_tuple=False)
 candidate_patch_idx = candidate_patch_idx[:, 0] * PATCH_GRID + candidate_patch_idx[:, 1]
 
 if candidate_patch_idx.numel() == 0:
@@ -571,7 +622,6 @@ if candidate_patch_idx.numel() == 0:
 
 print(f"candidate masked source patches: {candidate_patch_idx.numel()}")
 
-# mutual consistency
 if mutual_only:
     mutual_keep = []
     for s_idx in candidate_patch_idx.tolist():
@@ -586,30 +636,39 @@ if candidate_patch_idx.numel() == 0:
 
 print(f"mutual-consistent candidates: {candidate_patch_idx.numel()}")
 
-# confidence score after correspondence
-# strong target similarity + clear margin + mask support
+candidate_tgt_patch_idx = src_to_tgt[candidate_patch_idx]
+
+coach_mask_flat = mask_patch_coach.reshape(-1)
+student_mask_flat = mask_patch_student.reshape(-1)
+
+target_mask_keep = student_mask_flat[candidate_tgt_patch_idx] > mask_threshold
+candidate_patch_idx = candidate_patch_idx[target_mask_keep]
+candidate_tgt_patch_idx = candidate_tgt_patch_idx[target_mask_keep]
+
+if candidate_patch_idx.numel() == 0:
+    raise RuntimeError("all candidates removed by student-side mask consistency")
+
+print(f"student-mask-consistent candidates: {candidate_patch_idx.numel()}")
+
 candidate_scores = (
     src_score[candidate_patch_idx]
     + 0.5 * src_margin[candidate_patch_idx]
-    + 0.25 * mask_patch.reshape(-1)[candidate_patch_idx]
+    + 0.25 * coach_mask_flat[candidate_patch_idx]
+    + 0.25 * student_mask_flat[candidate_tgt_patch_idx]
 )
 
-# sort by score first
 sorted_idx = torch.argsort(candidate_scores, descending=True)
 candidate_patch_idx = candidate_patch_idx[sorted_idx]
+candidate_tgt_patch_idx = candidate_tgt_patch_idx[sorted_idx]
 candidate_scores = candidate_scores[sorted_idx]
 
-# keep a larger high-quality pool before fps
 if candidate_patch_idx.numel() > pre_fps_pool_size:
     candidate_patch_idx = candidate_patch_idx[:pre_fps_pool_size]
+    candidate_tgt_patch_idx = candidate_tgt_patch_idx[:pre_fps_pool_size]
     candidate_scores = candidate_scores[:pre_fps_pool_size]
-
-# corresponding target patches for the pool
-candidate_tgt_patch_idx = src_to_tgt[candidate_patch_idx]
 
 # ------------------------------------------------------------
 # target-side dedup / local suppression
-# keep only one strong source patch per local target neighborhood
 # ------------------------------------------------------------
 kept_src = []
 kept_tgt = []
@@ -674,7 +733,6 @@ else:
 final_src_patch_idx = torch.unique(final_src_patch_idx)
 final_tgt_patch_idx = src_to_tgt[final_src_patch_idx]
 
-
 src_centers_224 = patch_index_to_center_xy(
     final_src_patch_idx,
     patch_hw=(PATCH_GRID, PATCH_GRID),
@@ -691,7 +749,6 @@ tgt_centers_224 = patch_index_to_center_xy(
 
 print(f"selected matched patch pairs after correspondence scoring: {src_centers_224.shape[0]}")
 
-# save pairwise anchor visualization
 save_pair_overlay(
     raw_coach[mask_frame_idx],
     raw_student[mask_frame_idx],
@@ -704,7 +761,8 @@ save_pair_overlay(
 # free memory before cotracker
 # ------------------------------------------------------------
 del raft_model
-del model
+del mask_model
+del plain_dino
 del flow_tensor
 del out_coach
 del out_student
@@ -716,7 +774,6 @@ cotracker = torch.hub.load("facebookresearch/co-tracker", "cotracker3_offline").
 _, _, _, h_coach, w_coach = video_tensor_coach.shape
 _, _, _, h_student, w_student = video_tensor_student.shape
 
-# scale coordinates from 224 to original resolution
 y_coach = src_centers_224[:, 1]
 x_coach = src_centers_224[:, 0]
 y_student = tgt_centers_224[:, 1]
@@ -737,9 +794,6 @@ print(f"tracking {queries_coach.shape[1]} FMAP-linked points in both videos...")
 pred_tracks_coach, pred_vis_coach = cotracker(video_tensor_coach, queries=queries_coach)
 pred_tracks_student, pred_vis_student = cotracker(video_tensor_student, queries=queries_student)
 
-# ------------------------------------------------------------
-# save
-# ------------------------------------------------------------
 save_data = {
     "coach": {
         "video_path": video_coach_path,
@@ -762,6 +816,8 @@ save_data = {
         "tgt_centers_224": tgt_centers_224.detach().cpu().numpy(),
         "src_score": src_score[final_src_patch_idx].detach().cpu().numpy(),
         "src_margin": src_margin[final_src_patch_idx].detach().cpu().numpy(),
+        "coach_mask_score": mask_patch_coach.reshape(-1)[final_src_patch_idx].detach().cpu().numpy(),
+        "student_mask_score": mask_patch_student.reshape(-1)[final_tgt_patch_idx].detach().cpu().numpy(),
     },
 }
 
@@ -771,9 +827,6 @@ with open(tracks_path, "wb") as f:
 
 print(f"saved paired trajectories to {tracks_path}")
 
-# ------------------------------------------------------------
-# visualize tracked videos
-# ------------------------------------------------------------
 vis_coach = Visualizer(save_dir=save_dir, pad_value=0, linewidth=1, fps=fps_coach)
 vis_coach.visualize(video_tensor_coach, pred_tracks_coach, pred_vis_coach, filename=f"{coach_name}_tracks_fmap")
 
@@ -782,6 +835,5 @@ vis_student.visualize(video_tensor_student, pred_tracks_student, pred_vis_studen
 
 print("num queried coach points:", queries_coach.shape[1])
 print("num queried student points:", queries_student.shape[1])
-
 print("coach visible at query frame:", int((pred_vis_coach[0, query_frame_coach] > 0.5).sum().item()))
 print("student visible at query frame:", int((pred_vis_student[0, query_frame_student] > 0.5).sum().item()))
