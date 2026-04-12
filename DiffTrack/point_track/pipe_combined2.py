@@ -16,6 +16,15 @@ from PIL import Image, ImageDraw
 import matplotlib.pyplot as plt
 import cv2
 
+import debugpy
+
+debugpy.listen(("0.0.0.0", 5678))
+
+print("waiting for debugger attach...")
+debugpy.wait_for_client() 
+
+print("debugger attached! Running code...")
+
 GPU_ID = 1
 if torch.cuda.is_available():
     torch.cuda.set_device(GPU_ID)
@@ -34,14 +43,12 @@ from torchvision.transforms import v2
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# ------------------------------------------------------------
-# hardcoded paths
-# ------------------------------------------------------------
+# TEACHER and STUDENT videos..
 video_coach_path = "UCF_Rep/val/v_PlayingCello_g22_c01.mp4"
 video_student_path = "UCF_Rep/val/v_PlayingCello_g23_c06.mp4"
 
 if not os.path.isfile(video_coach_path) or not os.path.isfile(video_student_path):
-    raise FileNotFoundError("one or both videos not found")
+    raise FileNotFoundError("video not found")
 
 coach_name = Path(video_coach_path).stem
 student_name = Path(video_student_path).stem
@@ -49,12 +56,10 @@ out_dir_name = f"compare_{coach_name}_vs_{student_name}"
 save_dir = os.path.join("point_track/saved_videos", out_dir_name)
 os.makedirs(save_dir, exist_ok=True)
 
-# ------------------------------------------------------------
-# config
-# ------------------------------------------------------------
+# SETUP..
 IMG_SIZE = 224
 PATCH_GRID = 16
-COPCA_DIM = 128
+COPCA_DIM = 128 #dino feats reduced to 128 via PCA
 EIGEN_NUM = 30
 
 start_f_coach = 20
@@ -142,20 +147,20 @@ def farthest_point_sampling_2d(points: torch.Tensor, num_samples: int) -> torch.
     return points[selected_indices]
 
 
-def co_pca_pair(feat1_hwc, feat2_hwc, out_dim=128):
+def co_pca_pair(feat1_hwc, feat2_hwc, out_dim=128): 
     h1, w1, c = feat1_hwc.shape
     h2, w2, _ = feat2_hwc.shape
 
     x1 = feat1_hwc.reshape(-1, c)
     x2 = feat2_hwc.reshape(-1, c)
 
-    x = torch.cat([x1, x2], dim=0)
+    x = torch.cat([x1, x2], dim=0) #concatenating so that co-PCA can be done..
     x_mean = x.mean(dim=0, keepdim=True)
     x_centered = x - x_mean
 
-    q = min(out_dim, x_centered.shape[1], x_centered.shape[0] - 1)
-    U, S, V = torch.pca_lowrank(x_centered, q=q)
-    x_reduced = x_centered @ V[:, :q]
+    q = min(out_dim, x_centered.shape[1], x_centered.shape[0] - 1) #num of dims...128
+    U, S, V = torch.pca_lowrank(x_centered, q=q) #get combined PCA..V is 768 x 128
+    x_reduced = x_centered @ V[:, :q] #(512×768)(768×128)=512×128 ... [NOTE: 512 because we concatenated..]
 
     x1_red = x_reduced[:x1.shape[0]].reshape(h1, w1, q)
     x2_red = x_reduced[x1.shape[0]:].reshape(h2, w2, q)
@@ -499,17 +504,19 @@ def save_smooth_fullimage_correspondence_plot(
 
     iio.imwrite(out_path, canvas)
 
-# ------------------------------------------------------------
-# main
-# ------------------------------------------------------------
+
+# MAIN
+
 print("loading mask model, plain DINO, and RAFT...")
+
+#loading mask model first..
 mask_model = DINOv2_LoRA().to(device)
 model_path = "test_models/physics_guide_lora_dino_epoch_9.pth"
 state_dict = torch.load(model_path, map_location=device, weights_only=True)
 
 new_state_dict = OrderedDict()
 for k, v in state_dict.items():
-    name = k[7:] if k.startswith("module.") else k
+    name = k[7:] if k.startswith("module.") else k #SKIPPING [cls + registers]...taking only actual patch features
     new_state_dict[name] = v
 
 mask_model.load_state_dict(new_state_dict)
@@ -518,6 +525,7 @@ mask_model.eval()
 plain_dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14").to(device).eval()
 raft_model = raft_large(pretrained=True, progress=False).to(device).eval()
 
+#mask model requires 3 frame chunk..(trained with stride=2..)
 raw_coach, px_coach = build_three_frame_chunk(frames_coach, start_frame=start_f_coach)
 raw_student, px_student = build_three_frame_chunk(frames_student, start_frame=start_f_student)
 
@@ -552,6 +560,13 @@ pred_mask_student_224 = F.interpolate(
 mask_map_coach = pred_mask_coach_224[mask_frame_idx, 0]
 mask_map_student = pred_mask_student_224[mask_frame_idx, 0]
 
+
+'''
+AT THIS POINT:
+
+both teacher and student have their masks from the custom finetuned DINOv2 model (finetuned on flow)
+'''
+
 save_mask_overlay(
     raw_coach[mask_frame_idx],
     mask_map_coach.detach().cpu().numpy().astype("float32"),
@@ -562,6 +577,12 @@ save_mask_overlay(
     mask_map_student.detach().cpu().numpy().astype("float32"),
     os.path.join(save_dir, f"{student_name}_mask_overlay.png"),
 )
+
+
+#IMPORTANT!!
+'''
+below, the paper's approach is used! taking plain DINO features, getting eigenvalues, etc..
+'''
 
 print("extracting plain DINO features for correspondence...")
 feat_coach_hwc = extract_plain_dino_patch_features(
@@ -577,6 +598,8 @@ feat_coach_copca, feat_student_copca = co_pca_pair(
     feat_student_hwc,
     out_dim=COPCA_DIM,
 )
+
+#NOTE: ABOVE essentially conerts 768 patch dim into 128...so 256 x 128 for each student and teacher
 
 fmap_model = FunctionalMap(
     src_data_hwc=feat_coach_copca,
@@ -596,10 +619,11 @@ save_smooth_fullimage_correspondence_plot(
     patch_grid=PATCH_GRID,
     upsample_to=IMG_SIZE,
 )
+#NOTE: this is my addon below!
+'''
+using custom finetuned DINO mask model after getting target to source and source to target correspondences..
+'''
 
-# ------------------------------------------------------------
-# restrict candidates using coach mask AFTER correspondence exists
-# ------------------------------------------------------------
 mask_patch_coach = F.interpolate(
     mask_map_coach.unsqueeze(0).unsqueeze(0),
     size=(PATCH_GRID, PATCH_GRID),
