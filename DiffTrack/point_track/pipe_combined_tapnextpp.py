@@ -1,8 +1,12 @@
 import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
 import sys
 import pickle
 from pathlib import Path
 from collections import OrderedDict
+from urllib.request import urlretrieve
 
 import cvxpy as cp
 import imageio.v3 as iio
@@ -16,6 +20,7 @@ from PIL import Image, ImageDraw
 import matplotlib.pyplot as plt
 import cv2
 
+
 # import debugpy
 
 # debugpy.listen(("0.0.0.0", 5678))
@@ -25,6 +30,7 @@ import cv2
 
 # print("debugger attached! Running code...")
 
+
 GPU_ID = 1
 if torch.cuda.is_available():
     torch.cuda.set_device(GPU_ID)
@@ -32,18 +38,26 @@ if torch.cuda.is_available():
 # setup paths
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 COTRACKER_ROOT = Path(__file__).resolve().parent / "co-tracker"
+TAPNET_ROOT = Path(__file__).resolve().parent / "tapnet"
 
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(COTRACKER_ROOT))
+sys.path.insert(0, str(TAPNET_ROOT))
 
+# keep visualizer only for rendering tracks
 from cotracker.utils.visualizer import Visualizer
 from point_sampling.model_finetune import DINOv2_LoRA
 from torchvision.models.optical_flow import raft_large
 from torchvision.transforms import v2
 
+# TAPNext++
+from tapnet.tapnext.tapnext_torch import TAPNext
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# TEACHER and STUDENT videos..
+# ------------------------------------------------------------
+# videos
+# ------------------------------------------------------------
 video_coach_path = "UCF_Rep/val/v_JumpingJack_g21_c04.mp4"
 video_student_path = "UCF_Rep/val/v_JumpingJack_g22_c01.mp4"
 
@@ -56,15 +70,17 @@ out_dir_name = f"compare_{coach_name}_vs_{student_name}"
 save_dir = os.path.join("point_track/saved_videos", out_dir_name)
 os.makedirs(save_dir, exist_ok=True)
 
-# SETUP..
+# ------------------------------------------------------------
+# config
+# ------------------------------------------------------------
 IMG_SIZE = 224
 PATCH_GRID = 16
-COPCA_DIM = 128 #dino feats reduced to 128 via PCA
+COPCA_DIM = 128
 EIGEN_NUM = 30
 
-start_f_coach = 20
-start_f_student = 20
-mask_frame_idx = 1
+start_f_coach = 0
+start_f_student = 0
+mask_frame_idx = 0
 
 query_frame_coach = start_f_coach + (mask_frame_idx * 2)
 query_frame_student = start_f_student + (mask_frame_idx * 2)
@@ -74,6 +90,9 @@ max_query_points = 30
 pre_fps_pool_size = 1000
 target_radius = 0
 mutual_only = False
+
+TAPNEXT_IMAGE_SIZE = (256, 256)
+TAPNEXT_CKPT = os.path.join(TAPNET_ROOT, "tapnextpp_ckpt.pt")
 
 raft_transform = v2.Compose([
     v2.ConvertImageDtype(torch.float32),
@@ -147,20 +166,20 @@ def farthest_point_sampling_2d(points: torch.Tensor, num_samples: int) -> torch.
     return points[selected_indices]
 
 
-def co_pca_pair(feat1_hwc, feat2_hwc, out_dim=128): 
+def co_pca_pair(feat1_hwc, feat2_hwc, out_dim=128):
     h1, w1, c = feat1_hwc.shape
     h2, w2, _ = feat2_hwc.shape
 
     x1 = feat1_hwc.reshape(-1, c)
     x2 = feat2_hwc.reshape(-1, c)
 
-    x = torch.cat([x1, x2], dim=0) #concatenating so that co-PCA can be done..
+    x = torch.cat([x1, x2], dim=0)
     x_mean = x.mean(dim=0, keepdim=True)
     x_centered = x - x_mean
 
-    q = min(out_dim, x_centered.shape[1], x_centered.shape[0] - 1) #num of dims...128
-    U, S, V = torch.pca_lowrank(x_centered, q=q) #get combined PCA..V is 768 x 128
-    x_reduced = x_centered @ V[:, :q] #(512×768)(768×128)=512×128 ... [NOTE: 512 because we concatenated..]
+    q = min(out_dim, x_centered.shape[1], x_centered.shape[0] - 1)
+    U, S, V = torch.pca_lowrank(x_centered, q=q)
+    x_reduced = x_centered @ V[:, :q]
 
     x1_red = x_reduced[:x1.shape[0]].reshape(h1, w1, q)
     x2_red = x_reduced[x1.shape[0]:].reshape(h2, w2, q)
@@ -505,18 +524,157 @@ def save_smooth_fullimage_correspondence_plot(
     iio.imwrite(out_path, canvas)
 
 
-# MAIN
+# ------------------------------------------------------------
+# TAPNext++ helpers
+# ------------------------------------------------------------
+def ensure_tapnext_checkpoint(ckpt_path: str):
+    if os.path.isfile(ckpt_path):
+        return
+    url = "https://storage.googleapis.com/dm-tapnet/tapnextpp/tapnextpp_ckpt.pt"
+    print(f"downloading TAPNext++ checkpoint to {ckpt_path} ...")
+    urlretrieve(url, ckpt_path)
 
+
+def load_tapnextpp_model(device="cuda", image_size=(256, 256), ckpt_path="tapnextpp_ckpt.pt"):
+    ensure_tapnext_checkpoint(ckpt_path)
+    model = TAPNext(image_size=image_size)
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+    state_dict = {k.replace("tapnext.", ""): v for k, v in ckpt["state_dict"].items()}
+    model.load_state_dict(state_dict)
+    model = model.to(device).eval()
+    return model
+
+
+def resize_video_for_tapnext(video_tensor_btc_hw, out_hw=(256, 256)):
+    """
+    Input:  (1, T, C, H, W), float
+    Output: (1, T, H2, W2, C), float32
+    """
+    b, t, c, h, w = video_tensor_btc_hw.shape
+    video = video_tensor_btc_hw[0]  # (T,C,H,W)
+    video = F.interpolate(video, size=out_hw, mode="bilinear", align_corners=False)
+    video = video.permute(0, 2, 3, 1).unsqueeze(0).contiguous()  # (1,T,H,W,C)
+    return video
+
+
+def scale_xy_points(xy_points, src_hw, dst_hw):
+    """
+    xy_points: (N,2) in (x,y)
+    """
+    src_h, src_w = src_hw
+    dst_h, dst_w = dst_hw
+
+    x = xy_points[:, 0] * ((dst_w - 1) / max(src_w - 1, 1))
+    y = xy_points[:, 1] * ((dst_h - 1) / max(src_h - 1, 1))
+    return torch.stack([x, y], dim=1)
+
+
+def run_tapnextpp_forward(model, video_bthwc, query_xy_firstframe):
+    """
+    video_bthwc: (1,T,H,W,C), full clip where queries are defined on frame 0
+    query_xy_firstframe: (1,N,2) in (x,y), frame 0 of this clip
+
+    Returns:
+        tracks_xy: (1,T,N,2) in (x,y)
+        visible:   (1,T,N) bool
+    """
+    b, t, h, w, c = video_bthwc.shape
+    assert b == 1
+
+    # TAPNext++ uses query points as (t, y, x)
+    n = query_xy_firstframe.shape[1]
+    t0 = torch.zeros((1, n, 1), device=video_bthwc.device, dtype=video_bthwc.dtype)
+    qx = query_xy_firstframe[..., 0:1]
+    qy = query_xy_firstframe[..., 1:2]
+    query_points_tyx = torch.cat([t0, qy, qx], dim=-1)  # (1,N,3)
+
+    with torch.no_grad():
+        with torch.amp.autocast("cuda", dtype=torch.float16, enabled=(device == "cuda")):
+            pred_tracks, track_logits, visible_logits, tracking_state = model(
+                video=video_bthwc[:, :1],
+                query_points=query_points_tyx,
+            )
+
+            pred_tracks_list = [pred_tracks.detach().cpu()]
+            pred_visible_list = [(visible_logits > 0).detach().cpu()]
+
+            for frame_idx in range(1, t):
+                curr_tracks, curr_track_logits, curr_visible_logits, tracking_state = model(
+                    video=video_bthwc[:, frame_idx:frame_idx + 1],
+                    state=tracking_state,
+                )
+                pred_tracks_list.append(curr_tracks.detach().cpu())
+                pred_visible_list.append((curr_visible_logits > 0).detach().cpu())
+
+    # notebook pattern:
+    # cat dim=1 -> (1,T,N,2), transpose(1,2) -> (1,N,T,2), then [...,::-1] -> (x,y)
+    tracks_torch = torch.cat(pred_tracks_list, dim=1).transpose(1, 2)  # (1,N,T,2), currently (y,x)
+    visible_torch = torch.cat(pred_visible_list, dim=1).transpose(1, 2).squeeze(-1)  # (1,N,T)
+
+    tracks_xy = tracks_torch[..., [1, 0]]  # (1,N,T,2) -> x,y
+    tracks_xy = tracks_xy.transpose(1, 2).contiguous()  # (1,T,N,2)
+    visible = visible_torch.transpose(1, 2).contiguous()  # (1,T,N)
+
+    return tracks_xy, visible
+
+
+def run_tapnextpp_fullvideo(model, video_tensor_btc_hw, query_frame, query_xy_orig, device="cuda"):
+    """
+    Full-video wrapper using:
+      - forward rollout from query_frame to end
+      - backward rollout on reversed prefix to recover frames before query_frame
+
+    Inputs:
+        video_tensor_btc_hw: (1,T,C,H,W)
+        query_frame: int
+        query_xy_orig: (1,N,2) in original resolution (x,y)
+
+    Returns:
+        pred_tracks: (1,T,N,2) in original resolution (x,y)
+        pred_vis:    (1,T,N) bool
+    """
+    b, t, c, h, w = video_tensor_btc_hw.shape
+    assert b == 1
+
+    tap_h, tap_w = TAPNEXT_IMAGE_SIZE
+    video_resized = resize_video_for_tapnext(video_tensor_btc_hw, out_hw=TAPNEXT_IMAGE_SIZE).to(device)
+
+    query_xy_scaled = scale_xy_points(
+        query_xy_orig[0],
+        src_hw=(h, w),
+        dst_hw=(tap_h, tap_w),
+    ).unsqueeze(0).to(device)
+
+    # -----------------------------
+    # forward from query_frame -> end
+    # -----------------------------
+    # Since query_frame is 0, this will run on the full video naturally!
+    video_forward = video_resized[:, query_frame:]  # first frame of this clip is original query frame
+    pred_tracks, pred_vis = run_tapnextpp_forward(
+        model=model,
+        video_bthwc=video_forward,
+        query_xy_firstframe=query_xy_scaled,
+    )  # (1,Tf,N,2), (1,Tf,N)
+
+    # scale back to original resolution
+    pred_tracks[..., 0] = pred_tracks[..., 0] * ((w - 1) / max(tap_w - 1, 1))
+    pred_tracks[..., 1] = pred_tracks[..., 1] * ((h - 1) / max(tap_h - 1, 1))
+
+    return pred_tracks, pred_vis.bool()
+
+
+# ------------------------------------------------------------
+# main
+# ------------------------------------------------------------
 print("loading mask model, plain DINO, and RAFT...")
 
-#loading mask model first..
 mask_model = DINOv2_LoRA().to(device)
 model_path = "test_models/physics_guide_lora_dino_epoch_9.pth"
 state_dict = torch.load(model_path, map_location=device, weights_only=True)
 
 new_state_dict = OrderedDict()
 for k, v in state_dict.items():
-    name = k[7:] if k.startswith("module.") else k #SKIPPING [cls + registers]...taking only actual patch features
+    name = k[7:] if k.startswith("module.") else k
     new_state_dict[name] = v
 
 mask_model.load_state_dict(new_state_dict)
@@ -525,7 +683,6 @@ mask_model.eval()
 plain_dino = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14").to(device).eval()
 raft_model = raft_large(pretrained=True, progress=False).to(device).eval()
 
-#mask model requires 3 frame chunk..(trained with stride=2..)
 raw_coach, px_coach = build_three_frame_chunk(frames_coach, start_frame=start_f_coach)
 raw_student, px_student = build_three_frame_chunk(frames_student, start_frame=start_f_student)
 
@@ -560,13 +717,6 @@ pred_mask_student_224 = F.interpolate(
 mask_map_coach = pred_mask_coach_224[mask_frame_idx, 0]
 mask_map_student = pred_mask_student_224[mask_frame_idx, 0]
 
-
-'''
-AT THIS POINT:
-
-both teacher and student have their masks from the custom finetuned DINOv2 model (finetuned on flow)
-'''
-
 save_mask_overlay(
     raw_coach[mask_frame_idx],
     mask_map_coach.detach().cpu().numpy().astype("float32"),
@@ -577,12 +727,6 @@ save_mask_overlay(
     mask_map_student.detach().cpu().numpy().astype("float32"),
     os.path.join(save_dir, f"{student_name}_mask_overlay.png"),
 )
-
-
-#IMPORTANT!!
-'''
-below, the paper's approach is used! taking plain DINO features, getting eigenvalues, etc..
-'''
 
 print("extracting plain DINO features for correspondence...")
 feat_coach_hwc = extract_plain_dino_patch_features(
@@ -598,8 +742,6 @@ feat_coach_copca, feat_student_copca = co_pca_pair(
     feat_student_hwc,
     out_dim=COPCA_DIM,
 )
-
-#NOTE: ABOVE essentially conerts 768 patch dim into 128...so 256 x 128 for each student and teacher
 
 fmap_model = FunctionalMap(
     src_data_hwc=feat_coach_copca,
@@ -619,11 +761,10 @@ save_smooth_fullimage_correspondence_plot(
     patch_grid=PATCH_GRID,
     upsample_to=IMG_SIZE,
 )
-#NOTE: this is my addon below!
-'''
-using custom finetuned DINO mask model after getting target to source and source to target correspondences..
-'''
 
+# ------------------------------------------------------------
+# restrict candidates with masks AFTER correspondence
+# ------------------------------------------------------------
 mask_patch_coach = F.interpolate(
     mask_map_coach.unsqueeze(0).unsqueeze(0),
     size=(PATCH_GRID, PATCH_GRID),
@@ -782,7 +923,7 @@ save_pair_overlay(
 )
 
 # ------------------------------------------------------------
-# free memory before cotracker
+# free memory before tracker
 # ------------------------------------------------------------
 del raft_model
 del mask_model
@@ -792,45 +933,68 @@ del out_coach
 del out_student
 torch.cuda.empty_cache()
 
-print("loading cotracker for joint tracking...")
-cotracker = torch.hub.load("facebookresearch/co-tracker", "cotracker3_offline").to(device)
+print("loading TAPNext++...")
+tapnext_model = load_tapnextpp_model(
+    device=device,
+    image_size=TAPNEXT_IMAGE_SIZE,
+    ckpt_path=TAPNEXT_CKPT,
+)
 
 _, _, _, h_coach, w_coach = video_tensor_coach.shape
 _, _, _, h_student, w_student = video_tensor_student.shape
 
-y_coach = src_centers_224[:, 1]
-x_coach = src_centers_224[:, 0]
-y_student = tgt_centers_224[:, 1]
-x_student = tgt_centers_224[:, 0]
+# queries in original resolution (x,y)
+query_xy_coach_orig = src_centers_224.clone()
+query_xy_student_orig = tgt_centers_224.clone()
 
-y_coach_orig = y_coach.float() * ((h_coach - 1) / (IMG_SIZE - 1))
-x_coach_orig = x_coach.float() * ((w_coach - 1) / (IMG_SIZE - 1))
-t_coach = torch.full_like(x_coach_orig, float(query_frame_coach))
-queries_coach = torch.stack([t_coach, x_coach_orig, y_coach_orig], dim=1).unsqueeze(0).to(device)
+# src_centers_224 / tgt_centers_224 are already (x,y) in 224-space, convert to original res
+query_xy_coach_orig[:, 0] = query_xy_coach_orig[:, 0] * ((w_coach - 1) / (IMG_SIZE - 1))
+query_xy_coach_orig[:, 1] = query_xy_coach_orig[:, 1] * ((h_coach - 1) / (IMG_SIZE - 1))
 
-y_student_orig = y_student.float() * ((h_student - 1) / (IMG_SIZE - 1))
-x_student_orig = x_student.float() * ((w_student - 1) / (IMG_SIZE - 1))
-t_student = torch.full_like(x_student_orig, float(query_frame_student))
-queries_student = torch.stack([t_student, x_student_orig, y_student_orig], dim=1).unsqueeze(0).to(device)
+query_xy_student_orig[:, 0] = query_xy_student_orig[:, 0] * ((w_student - 1) / (IMG_SIZE - 1))
+query_xy_student_orig[:, 1] = query_xy_student_orig[:, 1] * ((h_student - 1) / (IMG_SIZE - 1))
 
-print(f"tracking {queries_coach.shape[1]} FMAP-linked points in both videos...")
+query_xy_coach_orig = query_xy_coach_orig.unsqueeze(0).to(device)   # (1,N,2)
+query_xy_student_orig = query_xy_student_orig.unsqueeze(0).to(device)
 
-pred_tracks_coach, pred_vis_coach = cotracker(video_tensor_coach, queries=queries_coach)
-pred_tracks_student, pred_vis_student = cotracker(video_tensor_student, queries=queries_student)
+print(f"tracking {query_xy_coach_orig.shape[1]} FMAP-linked points in both videos with TAPNext++...")
+
+pred_tracks_coach, pred_vis_coach = run_tapnextpp_fullvideo(
+    model=tapnext_model,
+    video_tensor_btc_hw=video_tensor_coach,
+    query_frame=query_frame_coach,
+    query_xy_orig=query_xy_coach_orig,
+    device=device,
+)
+
+pred_tracks_student, pred_vis_student = run_tapnextpp_fullvideo(
+    model=tapnext_model,
+    video_tensor_btc_hw=video_tensor_student,
+    query_frame=query_frame_student,
+    query_xy_orig=query_xy_student_orig,
+    device=device,
+)
+
+# move to CPU for save / visualize
+pred_tracks_coach = pred_tracks_coach.cpu()
+pred_vis_coach = pred_vis_coach.cpu()
+
+pred_tracks_student = pred_tracks_student.cpu()
+pred_vis_student = pred_vis_student.cpu()
 
 save_data = {
     "coach": {
         "video_path": video_coach_path,
         "query_frame": int(query_frame_coach),
-        "tracks": pred_tracks_coach.detach().cpu().numpy(),
-        "visibility": pred_vis_coach.detach().cpu().numpy(),
+        "tracks": pred_tracks_coach.numpy(),
+        "visibility": pred_vis_coach.numpy(),
         "fps": fps_coach,
     },
     "student": {
         "video_path": video_student_path,
         "query_frame": int(query_frame_student),
-        "tracks": pred_tracks_student.detach().cpu().numpy(),
-        "visibility": pred_vis_student.detach().cpu().numpy(),
+        "tracks": pred_tracks_student.numpy(),
+        "visibility": pred_vis_student.numpy(),
         "fps": fps_student,
     },
     "anchor_matching": {
@@ -845,19 +1009,30 @@ save_data = {
     },
 }
 
-tracks_path = os.path.join(save_dir, "paired_trajectories_fmap_sample_after.pkl")
+tracks_path = os.path.join(save_dir, "paired_trajectories_fmap_tapnextpp.pkl")
 with open(tracks_path, "wb") as f:
     pickle.dump(save_data, f)
 
 print(f"saved paired trajectories to {tracks_path}")
 
+# keep your existing visualizer if you still want fast rendering
 vis_coach = Visualizer(save_dir=save_dir, pad_value=0, linewidth=1, fps=fps_coach)
-vis_coach.visualize(video_tensor_coach, pred_tracks_coach, pred_vis_coach, filename=f"{coach_name}_tracks_fmap")
+vis_coach.visualize(
+    video_tensor_coach.cpu(),
+    pred_tracks_coach,
+    pred_vis_coach,
+    filename=f"{coach_name}_tracks_tapnextpp",
+)
 
 vis_student = Visualizer(save_dir=save_dir, pad_value=0, linewidth=1, fps=fps_student)
-vis_student.visualize(video_tensor_student, pred_tracks_student, pred_vis_student, filename=f"{student_name}_tracks_fmap")
+vis_student.visualize(
+    video_tensor_student.cpu(),
+    pred_tracks_student,
+    pred_vis_student,
+    filename=f"{student_name}_tracks_tapnextpp",
+)
 
-print("num queried coach points:", queries_coach.shape[1])
-print("num queried student points:", queries_student.shape[1])
-print("coach visible at query frame:", int((pred_vis_coach[0, query_frame_coach] > 0.5).sum().item()))
-print("student visible at query frame:", int((pred_vis_student[0, query_frame_student] > 0.5).sum().item()))
+print("num queried coach points:", query_xy_coach_orig.shape[1])
+print("num queried student points:", query_xy_student_orig.shape[1])
+print("coach visible at query frame:", int(pred_vis_coach[0, query_frame_coach].sum().item()))
+print("student visible at query frame:", int(pred_vis_student[0, query_frame_student].sum().item()))
