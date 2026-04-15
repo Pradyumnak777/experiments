@@ -52,6 +52,7 @@ from torchvision.transforms import v2
 
 # TAPNext++
 from tapnet.tapnext.tapnext_torch import TAPNext
+from tapnet.tapnext.tapnext_torch_utils import tracker_certainty
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -547,12 +548,13 @@ def load_tapnextpp_model(device="cuda", image_size=(256, 256), ckpt_path="tapnex
 
 def resize_video_for_tapnext(video_tensor_btc_hw, out_hw=(256, 256)):
     """
-    Input:  (1, T, C, H, W), float
-    Output: (1, T, H2, W2, C), float32
+    Input:  (1, T, C, H, W), float [0, 255]
+    Output: (1, T, H2, W2, C), float32 [-1, 1]
     """
     b, t, c, h, w = video_tensor_btc_hw.shape
     video = video_tensor_btc_hw[0]  # (T,C,H,W)
     video = F.interpolate(video, size=out_hw, mode="bilinear", align_corners=False)
+    video = (video.float() / 255.0) * 2.0 - 1.0  # Scale to [-1, 1] for TAPNext
     video = video.permute(0, 2, 3, 1).unsqueeze(0).contiguous()  # (1,T,H,W,C)
     return video
 
@@ -569,7 +571,7 @@ def scale_xy_points(xy_points, src_hw, dst_hw):
     return torch.stack([x, y], dim=1)
 
 
-def run_tapnextpp_forward(model, video_bthwc, query_xy_firstframe):
+def run_tapnextpp_forward(model, video_bthwc, query_xy_firstframe, threshold=0.15, radius=8):
     """
     video_bthwc: (1,T,H,W,C), full clip where queries are defined on frame 0
     query_xy_firstframe: (1,N,2) in (x,y), frame 0 of this clip
@@ -578,6 +580,7 @@ def run_tapnextpp_forward(model, video_bthwc, query_xy_firstframe):
         tracks_xy: (1,T,N,2) in (x,y)
         visible:   (1,T,N) bool
     """
+    import tqdm
     b, t, h, w, c = video_bthwc.shape
     assert b == 1
 
@@ -589,29 +592,39 @@ def run_tapnextpp_forward(model, video_bthwc, query_xy_firstframe):
     query_points_tyx = torch.cat([t0, qy, qx], dim=-1)  # (1,N,3)
 
     with torch.no_grad():
-        with torch.amp.autocast("cuda", dtype=torch.float16, enabled=(device == "cuda")):
+        with torch.amp.autocast("cuda", dtype=torch.float16, enabled=True):
             pred_tracks, track_logits, visible_logits, tracking_state = model(
                 video=video_bthwc[:, :1],
                 query_points=query_points_tyx,
             )
 
-            pred_tracks_list = [pred_tracks.detach().cpu()]
-            pred_visible_list = [(visible_logits > 0).detach().cpu()]
+            pred_tracks_list = [pred_tracks.cpu()]
+            pred_track_logits_list = [track_logits.cpu()]
+            pred_visible_list = [visible_logits.cpu()]
 
-            for frame_idx in range(1, t):
+            for frame_idx in tqdm.tqdm(range(1, t)):
                 curr_tracks, curr_track_logits, curr_visible_logits, tracking_state = model(
                     video=video_bthwc[:, frame_idx:frame_idx + 1],
                     state=tracking_state,
                 )
-                pred_tracks_list.append(curr_tracks.detach().cpu())
-                pred_visible_list.append((curr_visible_logits > 0).detach().cpu())
+                pred_tracks_list.append(curr_tracks.cpu())
+                pred_track_logits_list.append(curr_track_logits.cpu())
+                pred_visible_list.append(curr_visible_logits.cpu())
 
     # notebook pattern:
-    # cat dim=1 -> (1,T,N,2), transpose(1,2) -> (1,N,T,2), then [...,::-1] -> (x,y)
-    tracks_torch = torch.cat(pred_tracks_list, dim=1).transpose(1, 2)  # (1,N,T,2), currently (y,x)
-    visible_torch = torch.cat(pred_visible_list, dim=1).transpose(1, 2).squeeze(-1)  # (1,N,T)
+    tracks = torch.cat(pred_tracks_list, dim=1).transpose(1, 2)
+    track_logits = torch.cat(pred_track_logits_list, dim=1).transpose(1, 2)
+    visible_logits = torch.cat(pred_visible_list, dim=1).transpose(1, 2)
 
-    tracks_xy = tracks_torch[..., [1, 0]]  # (1,N,T,2) -> x,y
+    pred_certainty = tracker_certainty(tracks, track_logits, radius)
+    pred_visible_and_certain = (
+        torch.sigmoid(visible_logits) * pred_certainty
+    ) > threshold
+
+    # visible = ~occluded
+    visible_torch = pred_visible_and_certain.squeeze(-1) # (1,N,T) bool
+
+    tracks_xy = tracks[..., [1, 0]]  # (1,N,T,2) -> x,y
     tracks_xy = tracks_xy.transpose(1, 2).contiguous()  # (1,T,N,2)
     visible = visible_torch.transpose(1, 2).contiguous()  # (1,T,N)
 
