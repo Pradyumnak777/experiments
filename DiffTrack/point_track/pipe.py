@@ -26,7 +26,7 @@ from torchvision.transforms import v2
 
 
 
-video_path = "UCF_Rep/val/v_BodyWeightSquats_g22_c03.mp4"
+video_path = "UCF_Rep/val/v_BabyCrawling_g23_c01.mp4"
 if not os.path.isfile(video_path):
     raise FileNotFoundError(f"Video not found: {video_path}")
 
@@ -78,23 +78,68 @@ def build_three_frame_chunk_from_loaded_frames(
     return raw_frames, pixel_frames
 
 
-def farthest_point_sampling_2d(points: torch.Tensor, num_samples: int) -> torch.Tensor:
+# def farthest_point_sampling_2d(points: torch.Tensor, num_samples: int) -> torch.Tensor:
+#     if points.shape[0] <= num_samples:
+#         return points
+
+#     points_float = points.float()
+#     selected_indices = torch.empty(num_samples, dtype=torch.long, device=points.device)
+
+#     center = points_float.mean(dim=0, keepdim=True)
+#     farthest_index = torch.argmax(torch.sum((points_float - center) ** 2, dim=1))
+#     min_distances = torch.full((points.shape[0],), float("inf"), device=points.device)
+
+#     for sample_index in range(num_samples):
+#         selected_indices[sample_index] = farthest_index
+#         selected_point = points_float[farthest_index : farthest_index + 1]
+#         distances = torch.sum((points_float - selected_point) ** 2, dim=1)
+#         min_distances = torch.minimum(min_distances, distances)
+#         farthest_index = torch.argmax(min_distances)
+
+#     return points[selected_indices]
+
+def hybrid_point_sampling_2d(
+    points: torch.Tensor, 
+    mask_values: torch.Tensor, 
+    num_samples: int, 
+    top_k_ratio: float = 0.5
+) -> torch.Tensor:
+    """
+    Samples points using a mix of highest mask intensity and Farthest Point Sampling.
+    """
     if points.shape[0] <= num_samples:
         return points
 
-    points_float = points.float()
-    selected_indices = torch.empty(num_samples, dtype=torch.long, device=points.device)
+    # Determine how many points go to Top-K vs FPS
+    num_top_k = int(num_samples * top_k_ratio)
+    num_fps = num_samples - num_top_k
 
-    center = points_float.mean(dim=0, keepdim=True)
-    farthest_index = torch.argmax(torch.sum((points_float - center) ** 2, dim=1))
+    # 1. Select Top-K highest intensity points
+    _, top_indices = torch.topk(mask_values, num_top_k)
+    selected_indices = top_indices.tolist()
+
+    if num_fps <= 0:
+        return points[selected_indices]
+
+    # 2. Run FPS for the remainder
+    points_float = points.float()
     min_distances = torch.full((points.shape[0],), float("inf"), device=points.device)
 
-    for sample_index in range(num_samples):
-        selected_indices[sample_index] = farthest_index
+    # CRITICAL: Initialize distances to the already selected Top-K points
+    # This forces the FPS to spread *away* from the dense clusters
+    selected_points_tensor = points_float[selected_indices]
+    for pt in selected_points_tensor:
+        distances = torch.sum((points_float - pt) ** 2, dim=1)
+        min_distances = torch.minimum(min_distances, distances)
+
+    # 3. Standard FPS loop for the remaining points
+    for _ in range(num_fps):
+        farthest_index = torch.argmax(min_distances).item()
+        selected_indices.append(farthest_index)
+
         selected_point = points_float[farthest_index : farthest_index + 1]
         distances = torch.sum((points_float - selected_point) ** 2, dim=1)
         min_distances = torch.minimum(min_distances, distances)
-        farthest_index = torch.argmax(min_distances)
 
     return points[selected_indices]
 
@@ -180,12 +225,22 @@ iio.imwrite(teacher_mask_path, teacher_overlay)
 print(f"Saved teacher mask overlay to {teacher_mask_path}")
 
 mask_map = pred_mask_224[mask_frame_idx, 0]
-mask_threshold = 0.3
+mask_threshold = 0.2
 candidate_coords = torch.nonzero(mask_map > mask_threshold, as_tuple=False)
 
 max_query_points = 100
 if candidate_coords.shape[0] > max_query_points:
-    candidate_coords = farthest_point_sampling_2d(candidate_coords, max_query_points)
+    #Extract the actual mask values for those specific coordinates
+    # We use candidate_coords[:, 0] for Y and candidate_coords[:, 1] for X
+    candidate_intensities = mask_map[candidate_coords[:, 0], candidate_coords[:, 1]] #getting finetuned dino scores for these points..
+    
+    # 3. Pass both to the new hybrid sampler (e.g., reserving 40% of points for the densest areas)
+    candidate_coords = hybrid_point_sampling_2d(
+        candidate_coords, 
+        candidate_intensities, 
+        max_query_points, 
+        top_k_ratio=0.3 # Adjust this up or down depending on how much clustering you want
+    )
 
 pred_mask_map = pred_mask_224[mask_frame_idx, 0].detach().cpu().numpy().astype("float32")
 pred_frame = raw_frames[mask_frame_idx].astype("float32")
