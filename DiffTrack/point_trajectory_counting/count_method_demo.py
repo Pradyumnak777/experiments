@@ -7,6 +7,30 @@ from sklearn.decomposition import PCA
 from scipy.signal import find_peaks, medfilt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import matplotlib.pyplot as plt
+from scipy.fft import fft, fftfreq
+
+def get_spectral_purity(signal_1d, fps):
+    """Calculates the Signal-to-Noise Ratio (SNR) of the dominant frequency."""
+    n = len(signal_1d)
+    yf = fft(signal_1d)
+    xf = fftfreq(n, 1/fps)
+    
+    amps = np.abs(yf)[:n//2]
+    freqs = xf[:n//2]
+    
+    # HIGH-PASS GATE: Ignore slow drift (< 0.5 Hz)
+    valid_mask = freqs > 0.5 
+    if not np.any(valid_mask):
+        return 0.0
+        
+    valid_amps = amps[valid_mask]
+    
+    # SNR = Peak Amplitude / Average Amplitude of everything else
+    max_amp = np.max(valid_amps)
+    mean_amp = np.mean(valid_amps)
+    snr = max_amp / (mean_amp + 1e-9)
+    
+    return snr
 
 def get_count_gt(vid_path, labels_dir):
     """Retrieves the ground truth count from the UCF-Rep annotation files."""
@@ -54,7 +78,8 @@ def count_reps(traj_file, vid_path, output_path="point_trajectory_counting/pca_c
     # 2. PCA Core Logic
     # Using Point 0 as the reference point
     pt_idx = 0
-    motion = tracks[:, pt_idx, :]  # [Time, 2]
+    point_xy = tracks[:, pt_idx, :]  # [Time, 2] absolute coordinates
+    motion = np.diff(point_xy, axis=0, prepend=point_xy[:1])  # [Time, 2] frame-to-frame displacement
     
     # Project 2D (X,Y) motion into the 1D dominant axis
     pca = PCA(n_components=1)
@@ -113,8 +138,8 @@ def count_reps(traj_file, vid_path, output_path="point_trajectory_counting/pca_c
 
 if __name__ == "__main__": 
     labels_dir = "annotations_ucfrep/val"
-    vid_path = "UCF_Rep/val/v_Biking_g21_c01.mp4"
-    traj_file = "point_track/saved_videos/v_Biking_g21_c01/v_Biking_g21_c01_trajectories_frame_22.pkl"
+    vid_path = "UCF_Rep/val/v_BabyCrawling_g24_c01.mp4"
+    traj_file = "point_track/saved_videos/v_BabyCrawling_g24_c01/v_BabyCrawling_g24_c01_trajectories_frame_22.pkl"
 
     # Get Ground Truth
     gt, vid_name = get_count_gt(vid_path, labels_dir)
