@@ -26,7 +26,7 @@ from torchvision.transforms import v2
 
 
 
-video_path = "UCF_Rep/val/v_BenchPress_g22_c01.mp4"
+video_path = "UCF_Rep/val/v_CuttingInKitchen_g21_c01.mp4"
 if not os.path.isfile(video_path):
     raise FileNotFoundError(f"Video not found: {video_path}")
 
