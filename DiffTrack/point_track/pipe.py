@@ -26,7 +26,7 @@ from torchvision.transforms import v2
 
 
 
-video_path = "UCF_Rep/val/v_Biking_g24_c06.mp4"
+video_path = "UCF_Rep/val/v_TrampolineJumping_g25_c03.mp4"
 if not os.path.isfile(video_path):
     raise FileNotFoundError(f"Video not found: {video_path}")
 
@@ -228,7 +228,7 @@ mask_map = pred_mask_224[mask_frame_idx, 0]
 mask_threshold = 0.2
 candidate_coords = torch.nonzero(mask_map > mask_threshold, as_tuple=False)
 
-max_query_points = 100
+max_query_points = 50
 if candidate_coords.shape[0] > max_query_points:
     #Extract the actual mask values for those specific coordinates
     # We use candidate_coords[:, 0] for Y and candidate_coords[:, 1] for X
@@ -239,7 +239,7 @@ if candidate_coords.shape[0] > max_query_points:
         candidate_coords, 
         candidate_intensities, 
         max_query_points, 
-        top_k_ratio=0.1 # Adjust this up or down depending on how much clustering you want
+        top_k_ratio=0.05 # Adjust this up or down depending on how much clustering you want
     )
 
 pred_mask_map = pred_mask_224[mask_frame_idx, 0].detach().cpu().numpy().astype("float32")
