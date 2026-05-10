@@ -42,7 +42,7 @@ def get_count_gt(vid_path, labels_dir):
     return 0, video_name 
 
 def get_spectral_purity(signal_1d, fps):
-    #dwe: calculate how clean the rhythm is
+    #calculate how clean the rhythm is
     n = len(signal_1d)
     yf = fft(signal_1d)
     xf = fftfreq(n, 1/fps)
@@ -50,7 +50,7 @@ def get_spectral_purity(signal_1d, fps):
     freqs = xf[:n//2]
     
     #ignore slow camera drift
-    valid_mask = freqs > 0.5 
+    valid_mask = (freqs > 0.2) & (freqs < 5.0) #jittering frequencies..
     if not np.any(valid_mask): return 0.0
     
     valid_amps = amps[valid_mask]
@@ -99,8 +99,8 @@ def count_reps(traj_file, vid_path, output_path="point_trajectory_counting/pca_c
         sig_i = pca_temp.fit_transform(unit_vel).flatten()
         
         #scoring part
-        snr = get_spectral_purity(sig_i, fps_video)
-        energy = np.std(mags) #use raw magnitude for energy weight
+        snr = get_spectral_purity(sig_i, fps_video) #high SNR means good periodicitiy..
+        energy = np.std(mags) #use raw magnitude for energy weight...
         score = snr * energy #scoring part: 
         
         all_scores[i] = score
@@ -115,12 +115,12 @@ def count_reps(traj_file, vid_path, output_path="point_trajectory_counting/pca_c
     final_pos = tracks[:, pt_idx, :]
     final_vel = np.diff(final_pos, axis=0, prepend=final_pos[:1])
     
-    final_mags = np.linalg.norm(final_vel, axis=1, keepdims=True)
-    final_unit_vel = final_vel / (final_mags + 1e-6)
+    # final_mags = np.linalg.norm(final_vel, axis=1, keepdims=True)
+    # final_unit_vel = final_vel / (final_mags + 1e-6)
     
     #project to 1D now
     pca = PCA(n_components=1)
-    signal_1d = pca.fit_transform(final_unit_vel).flatten()
+    signal_1d = pca.fit_transform(final_vel).flatten()
     
     #smoothening
     signal_1d = medfilt(signal_1d, kernel_size=5)
@@ -128,7 +128,8 @@ def count_reps(traj_file, vid_path, output_path="point_trajectory_counting/pca_c
     
     #perform counting
     std_val = np.std(signal_1d)
-    peaks, _ = find_peaks(signal_1d, prominence=std_val * 0.5)
+    peaks, _ = find_peaks(signal_1d, prominence=std_val * 0.5, height=0, distance=5) #height=0, so counting positive side peaks only..
+    #distance = 3, means repitiotns canot relaistically occur every 3 frames, as that is too small..
     pred_count = len(peaks)
     
     '''
@@ -180,7 +181,6 @@ def count_reps(traj_file, vid_path, output_path="point_trajectory_counting/pca_c
             if y_max > y_min:
                 ax2.set_ylim(y_min * 1.2 if y_min < 0 else y_min * 0.8, y_max * 1.2)
 
-            #panel 3: the "why" (score distribution)
             valid_scores = all_scores[active_mask]
             valid_indices = np.where(active_mask)[0]
             
@@ -214,8 +214,8 @@ def count_reps(traj_file, vid_path, output_path="point_trajectory_counting/pca_c
     
 if __name__ == "__main__": 
     labels_dir = "annotations_ucfrep/val"
-    vid_path = "UCF_Rep/val/v_BreastStroke_g24_c01.mp4"
-    traj_file = "point_track/saved_videos/v_BreastStroke_g24_c01/v_BreastStroke_g24_c01_trajectories_frame_22.pkl"
+    vid_path = "UCF_Rep/val/v_Rowing_g22_c04.mp4"
+    traj_file = "point_track/saved_videos/v_Rowing_g22_c04/v_Rowing_g22_c04_trajectories_frame_22.pkl"
 
     # Get Ground Truth
     gt, vid_name = get_count_gt(vid_path, labels_dir)
@@ -223,6 +223,6 @@ if __name__ == "__main__":
     # Run Prediction
     pred = count_reps(traj_file, vid_path)
 
-    print(f"\n--- Results for {vid_name} ---")
+    print(f"\nResults for {vid_name}: ")
     print(f"Ground Truth: {gt}")
     print(f"Predicted:    {pred}")

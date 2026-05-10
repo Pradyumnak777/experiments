@@ -117,8 +117,8 @@ def get_count_gt(vid_path, labels_dir):
 
 if __name__ == "__main__":
     labels_dir = "annotations_ucfrep/val"
-    vid_path = "UCF_Rep/val/v_PlayingViolin_g21_c01.mp4"
-    traj_file = "point_track/saved_videos/v_PlayingViolin_g21_c01/v_PlayingViolin_g21_c01_trajectories_frame_22.pkl"
+    vid_path = "UCF_Rep/val/v_Biking_g23_c02.mp4"
+    traj_file = "point_track/saved_videos/v_Biking_g23_c02/v_Biking_g23_c02_trajectories_frame_22.pkl"
     
     #derive the output name with the video prefix
     vid_name = os.path.basename(vid_path).replace(".mp4", "")
