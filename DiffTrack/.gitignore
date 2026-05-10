@@ -200,3 +200,8 @@ co-segmentation_old2/
 custom_vid_output/
 vids_mp4/
 diffusers/
+point_sampling/finetuned_test_new/
+point_sampling/finetuned_test/
+point_sampling/physics_mask_vis/
+point_track/co-tracker/
+point_track/saved_videos/
