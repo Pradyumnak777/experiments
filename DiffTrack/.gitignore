@@ -199,6 +199,4 @@ co-segmentation_old2/
 #size reduction
 custom_vid_output/
 vids_mp4/
-point_sampling/
 diffusers/
-point_trajectory_counting/
