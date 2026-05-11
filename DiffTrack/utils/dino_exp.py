@@ -240,20 +240,26 @@ def get_dino_features(img_tensor, dino_model):
     
     with torch.no_grad():
         outputs = dino_model(img_tensor)
-        # patch_tokens shape: [1, num_patches, embed_dim]
-        patch_tokens = outputs.last_hidden_state[0, 1:, :] 
+        # patch_tokens shape: [1(ts is batch size), num_patches + 1(ts is for the cls token), embed_dim]
+        patch_tokens = outputs.last_hidden_state[0, 1:, :]  #skipping the CLS token
         
         num_patches = patch_tokens.shape[0]
         embed_dim = patch_tokens.shape[1] #to detect 384, 768, or 1024 dynamically
         
         # Calculate grid size (sqrt of patches)
-        grid_size = int(num_patches**0.5)
+        grid_size = int(num_patches**0.5) #num of patches is currently  1D.
+        #it needs to be projected to 2D. to make a square, sqrt of 2.
+        '''
+        but why make a square? cuz the original image was 2D.(?)
+        '''
         
         # Reshape using the dynamic embed_dim
         features_raw = patch_tokens.reshape(grid_size, grid_size, embed_dim).permute(2, 0, 1)
+        
+        #below effective makes the grid size 16x16..
         features_16x16 = F.interpolate(features_raw.unsqueeze(0), size=(16, 16), mode='bilinear')
     
-    return features_16x16.squeeze(0).half().cpu()
+    return features_16x16.squeeze(0).half().cpu() #outputs [dim, 16, 16]
 
 def maskcut_tensor_method(img_tensor, num_objects=2, patch_size=14, dino_model=None):
     if dino_model is None:

@@ -109,7 +109,7 @@ def preprocess(vid_tensor, raw_frames, name, dino_model, raft_model, depth_model
         torch.cuda.empty_cache()
 
     #combine and pad last frame
-    zero_flow = torch.zeros((1, 2, h, w), dtype=torch.half)
+    zero_flow = torch.zeros((1, 2, h, w), dtype=torch.half) #last entry is zero flow
     flow_tensor_half = torch.cat(flow_list + [zero_flow], dim=0)
 
     #save files

@@ -10,6 +10,14 @@ from model_finetune import DINOv2_LoRA, get_robust_mask
 import random
 import numpy as np
 from data_utils import UCFRep_finetune
+
+import debugpy
+debugpy.listen(("0.0.0.0", 5678))
+print("Waiting for debugger attach...")
+debugpy.wait_for_client()
+print("Debugger attached! Running code...")
+
+
 SEED = 42
 
 def seed_everything(seed: int = SEED) -> None:

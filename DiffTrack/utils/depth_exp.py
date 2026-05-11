@@ -18,7 +18,7 @@ def get_batch_depth(raw_frames_list, model, target_size=(224, 224), chunk_size=1
             depth_tensor = torch.from_numpy(depth_numpy).unsqueeze(1).float()
             depth_tensor = F_v2.resize(depth_tensor, target_size, antialias=True)
             
-            #normalize 0-1 per frame
+            #normalize 0-1 per frame (1 closer, 0 darker?)
             b = depth_tensor.shape[0]
             depth_flat = depth_tensor.view(b, -1)
             d_min = depth_flat.min(dim=1, keepdim=True)[0].view(b, 1, 1, 1)
