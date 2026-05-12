@@ -83,13 +83,23 @@ def train():
                         
             #3- USING SAME FLOW MASK TO DO CONTRASTIVE LEARNING TOO
             #teaches the lora weights to temporally group those actor features
-            features_flat = patch_features.permute(0, 1, 3, 4, 2).reshape(-1, 768)  #b*t, 768, 16, 16
+            features_flat = patch_features.permute(0, 1, 3, 4, 2).reshape(-1, 768)  #before: b*t, 768, 16, 16
+            '''
+            basically, 'features_flat' collapses batches, time, gridsize fully into a list
+            of vectors (of 768 dim) -> [N, 768], where N=b*t*16*16
+            '''
             features_flat = F.normalize(features_flat, dim=1)
-            cr_mask_flat = target_low.view(-1)
+            cr_mask_flat = target_low.view(-1) #(b * t * 16 * 16,) . It is a 1D vector
+            #basically (N,)
             
             actor_vectors = features_flat[cr_mask_flat == 1] #actor patches where flow_mask gives high values
+            '''
+            returns (n, 768)
+            '''
             bg_vectors = features_flat[cr_mask_flat == 0]#bg patches where flow mask has low value..
-            
+            '''
+            returns (m, 768)
+            '''
             loss_cr = torch.tensor(0.0, device=device)
             
             if actor_vectors.size(0) > 1 and bg_vectors.size(0) > 0:

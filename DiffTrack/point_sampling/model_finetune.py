@@ -61,7 +61,7 @@ def get_robust_mask(flow, threshold_multiplier=1.2, flow_weight=0.6): #lower wei
     
     rel_mag = torch.norm(rel_flow, dim=2) # [b, t, h, w]
     # atan2(v, u) gives the relative direction of motion
-    rel_angle = torch.atan2(rel_flow[:, :, 1], rel_flow[:, :, 0])  #get the a ngle wrt positive x axis (by default)
+    rel_angle = torch.atan2(rel_flow[:, :, 1], rel_flow[:, :, 0])  #get the angle wrt positive x axis (by default)
 
     #this is a heauristic..
     '''
