@@ -130,8 +130,8 @@ def train():
                 save_debug_image(pixels[0, 1], high_res_fd_mask[0, 1], pred_mask[0, 1], epoch, batch_idx)
                 print(f"Epoch: {epoch}, Batch: {batch_idx}, Total: {total_loss.item():.4f} (CE: {loss_ce.item():.4f}, CR: {loss_cr.item():.4f})")
                         
-        os.makedirs("test_models", exist_ok=True)
-        checkpoint_path = os.path.join("test_models", f"physics_guide_lora_dino_epoch_{epoch}.pth")
+        os.makedirs("point_sampling/test_models", exist_ok=True)
+        checkpoint_path = os.path.join("point_sampling/test_models", f"dino_finetune_{epoch}.pth")
         
         #save checkpoint every 10th epoch
         if (epoch + 1) % 10 == 0:
