@@ -103,3 +103,48 @@ def get_robust_mask(flow, threshold_multiplier=1.2, flow_weight=0.6): #lower wei
     binary_mask = binary_mask * spatial_mask
 
     return binary_mask.unsqueeze(2)
+
+
+def get_robust_mask_2(flow, percentile=50):
+    """
+    Angle-consistency-only robust mask.
+    Masks pixels based on temporal stability of flow direction (no magnitude).
+
+    Args:
+        flow: [b, t, 2, h, w] optical flow
+        percentile: threshold percentile (0-100). Default 50 = median.
+                    Higher values (e.g., 70) give stricter masking.
+
+    Returns:
+        binary_mask: [b, t, 1, h, w]
+    """
+    b, t, _, h, w = flow.shape
+
+    # Relative flow (normalize by median)
+    median_flow = flow.view(b, t, 2, -1).median(dim=3, keepdim=True)[0].view(b, t, 2, 1, 1)
+    rel_flow = flow - median_flow
+
+    # Relative angle per pixel per frame
+    rel_angle = torch.atan2(rel_flow[:, :, 1], rel_flow[:, :, 0])  # [b, t, h, w]
+
+    # Temporal angle differences (consecutive frames)
+    angle_diff_t = torch.abs(rel_angle[:, 1:] - rel_angle[:, :-1])  # [b, t-1, h, w]
+
+    # Handle pi/-pi wrap around
+    angle_diff_t = torch.where(angle_diff_t > np.pi, 2*np.pi - angle_diff_t, angle_diff_t)
+
+    # Convert to consistency: small angle diffs -> high consistency
+    angle_consistency = torch.cos(angle_diff_t)  # [b, t-1, h, w]
+
+    # Pad to original temporal dimension
+    angle_consistency = F.pad(angle_consistency, (0,0,0,0,1,0), value=1.0)  # [b, t, h, w]
+
+    # Adaptive threshold
+    consistency_flat = angle_consistency.float().view(b, -1)  # [b, t*h*w]
+    thresh = torch.quantile(consistency_flat, percentile / 100.0, dim=1, keepdim=True)  # [b, 1]
+    thresh = thresh.view(b, 1, 1, 1)  # [b, 1, 1, 1] for broadcasting
+
+    # Binary mask
+    binary_mask = (angle_consistency > thresh).float()  # [b, t, h, w]
+
+    return binary_mask.unsqueeze(2)  # [b, t, 1, h, w]
