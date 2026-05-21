@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 import cv2
 import os
 
-# ── paths (run from DiffTrack/) ───────────────────────────────────────────────
 VIDEO_NAME  = 'v_Biking_g21_c01'
 VIDEO_PATH  = f'UCF_Rep/val/{VIDEO_NAME}.mp4'
 OUTPUT_PATH = 'point_sampling/flowfeat_mask.png'
@@ -15,7 +14,6 @@ OUTPUT_PATH = 'point_sampling/flowfeat_mask.png'
 NUM_FRAMES  = 8
 PERCENTILE  = 60
 SIZE        = (224, 224)
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 def load_flowfeat(model_name='dinov2_vitb14_kt', device='cuda'):
@@ -30,7 +28,6 @@ def get_flowfeat_mask(pixels, flowfeat_model):
     frames_flat = pixels.view(B * T, C, H, W)
     outputs = flowfeat_model(frames_flat)
 
-    # VERIFY: output format — dict or tuple — from the repo demo notebook
     if isinstance(outputs, dict):
         decoder_feats = outputs['decoder']
     else:
