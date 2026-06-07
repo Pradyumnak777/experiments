@@ -2,17 +2,15 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg') #not use gui
 import matplotlib.pyplot as plt
 import cv2
-import os
 
-VIDEO_NAME  = 'v_Biking_g21_c01'
+VIDEO_NAME  = 'v_BreastStroke_g22_c01'
 VIDEO_PATH  = f'UCF_Rep/val/{VIDEO_NAME}.mp4'
-OUTPUT_PATH = 'point_sampling/flowfeat_mask.png'
+OUTPUT_PATH = 'point_sampling/flowfeat_pca.png'
 
 NUM_FRAMES  = 8
-PERCENTILE  = 60
 SIZE        = (224, 224)
 
 
@@ -20,10 +18,14 @@ def load_flowfeat(model_name='dinov2_vitb14_kt', device='cuda'):
     model = torch.hub.load('tum-vision/flowfeat', 'flowfeat', name=model_name, pretrained=True)
     return model.to(device).eval()
 
+
 @torch.no_grad()
-def get_flowfeat_mask(pixels, flowfeat_model):
+def get_flowfeat(pixels, flowfeat_model):
+    """Return the raw FlowFeat decoder features, upsampled to input size.
+
+    Output shape: [B, T, feat_dim, H, W]
+    """
     B, T, C, H, W = pixels.shape
-    device = pixels.device
 
     frames_flat = pixels.view(B * T, C, H, W)
     outputs = flowfeat_model(frames_flat)
@@ -39,18 +41,37 @@ def get_flowfeat_mask(pixels, flowfeat_model):
             decoder_feats, size=(H, W), mode='bilinear', align_corners=False
         )
 
-    decoder_feats = F.normalize(decoder_feats, dim=1)
-    decoder_feats = decoder_feats.view(B, T, feat_dim, H, W)
+    return decoder_feats.view(B, T, feat_dim, H, W)
 
-    mean_feat = decoder_feats.mean(dim=1, keepdim=True)
-    variance  = ((decoder_feats - mean_feat) ** 2).mean(dim=(1, 2))  # [B, H, W]
 
-    thresh = torch.quantile(
-        variance.view(B, -1), PERCENTILE / 100.0, dim=1
-    ).view(B, 1, 1)
+@torch.no_grad()
+def feats_to_rgb(decoder_feats):
+    """PCA the FlowFeat channels down to 3 -> RGB, jointly over all frames.
 
-    binary_mask = (variance > thresh).float()
-    return binary_mask.unsqueeze(1).unsqueeze(2).expand(-1, T, 1, -1, -1).contiguous()
+    Fitting one PCA over the whole clip keeps the colour mapping consistent
+    across frames, so temporal consistency is visible.
+
+    Input : [B, T, C, H, W]   (assumes B == 1)
+    Output: [T, H, W, 3] in [0, 1]
+    """
+    B, T, C, H, W = decoder_feats.shape
+    assert B == 1, "visualization assumes batch size 1"
+
+    # [T*H*W, C]
+    feats = decoder_feats[0].permute(0, 2, 3, 1).reshape(-1, C).float()
+
+    # center, then project onto top-3 principal components
+    mean = feats.mean(dim=0, keepdim=True)
+    centered = feats - mean
+    _, _, V = torch.pca_lowrank(centered, q=3)
+    proj = centered @ V[:, :3]              # [T*H*W, 3]
+
+    # min-max normalize each component over the whole volume -> [0, 1]
+    lo = proj.min(dim=0, keepdim=True).values
+    hi = proj.max(dim=0, keepdim=True).values
+    rgb = (proj - lo) / (hi - lo + 1e-8)
+
+    return rgb.reshape(T, H, W, 3).cpu().numpy()
 
 
 def load_video_frames(mp4_path):
@@ -94,27 +115,23 @@ if __name__ == '__main__':
     print(f"Loading video: {VIDEO_PATH}")
     pixels = load_video_frames(VIDEO_PATH).to(device)
 
-    print("Computing mask...")
-    mask = get_flowfeat_mask(pixels, model)   # [1, T, 1, 224, 224]
+    print("Extracting FlowFeat features...")
+    feats = get_flowfeat(pixels, model)     # [1, T, C, 224, 224]
+    rgb   = feats_to_rgb(feats)             # [T, 224, 224, 3]
 
     T = pixels.shape[1]
     fig, axes = plt.subplots(2, T, figsize=(3 * T, 6))
 
     for t in range(T):
-        img = denorm(pixels[0, t])
-        msk = mask[0, t, 0].cpu().numpy()
-
-        axes[0, t].imshow(img)
+        axes[0, t].imshow(denorm(pixels[0, t]))
         axes[0, t].set_title(f'frame {t}')
         axes[0, t].axis('off')
 
-        overlay = img.copy()
-        overlay[msk == 1] = overlay[msk == 1] * 0.4 + np.array([1, 0, 0]) * 0.6
-        axes[1, t].imshow(overlay)
-        axes[1, t].set_title(f'mask {t}')
+        axes[1, t].imshow(rgb[t])
+        axes[1, t].set_title(f'flowfeat {t}')
         axes[1, t].axis('off')
 
-    plt.suptitle(f'{VIDEO_NAME}  |  FlowFeat mask  (percentile={PERCENTILE})')
+    plt.suptitle(f'{VIDEO_NAME}  |  raw FlowFeat (PCA->RGB, shared across frames)')
     plt.tight_layout()
     plt.savefig(OUTPUT_PATH, dpi=150)
     plt.close(fig)
