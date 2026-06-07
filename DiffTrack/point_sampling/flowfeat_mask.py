@@ -6,11 +6,11 @@ matplotlib.use('Agg') #not use gui
 import matplotlib.pyplot as plt
 import cv2
 
-VIDEO_NAME  = 'v_BreastStroke_g22_c01'
+VIDEO_NAME  = 'v_Biking_g21_c01'
 VIDEO_PATH  = f'UCF_Rep/val/{VIDEO_NAME}.mp4'
 OUTPUT_PATH = 'point_sampling/flowfeat_pca.png'
 
-NUM_FRAMES  = 8
+NUM_FRAMES  = 1
 SIZE        = (224, 224)
 
 
@@ -121,6 +121,8 @@ if __name__ == '__main__':
 
     T = pixels.shape[1]
     fig, axes = plt.subplots(2, T, figsize=(3 * T, 6))
+    if NUM_FRAMES == 1:
+        axes = axes[:, np.newaxis]
 
     for t in range(T):
         axes[0, t].imshow(denorm(pixels[0, t]))
