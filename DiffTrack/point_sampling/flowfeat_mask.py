@@ -14,11 +14,11 @@ NUM_FRAMES  = 1
 SIZE        = (224, 224)
 
 
-import debugpy
-debugpy.listen(("0.0.0.0", 5678))
-print("Waiting for debugger attach...")
-debugpy.wait_for_client()
-print("Debugger attached! Running code...")
+# import debugpy
+# debugpy.listen(("0.0.0.0", 5678))
+# print("Waiting for debugger attach...")
+# debugpy.wait_for_client()
+# print("Debugger attached! Running code...")
 
 
 def load_flowfeat(model_name='dinov2_vitb14_kt', device='cuda'):
