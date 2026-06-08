@@ -14,6 +14,13 @@ NUM_FRAMES  = 1
 SIZE        = (224, 224)
 
 
+import debugpy
+debugpy.listen(("0.0.0.0", 5678))
+print("Waiting for debugger attach...")
+debugpy.wait_for_client()
+print("Debugger attached! Running code...")
+
+
 def load_flowfeat(model_name='dinov2_vitb14_kt', device='cuda'):
     model = torch.hub.load('tum-vision/flowfeat', 'flowfeat', name=model_name, pretrained=True)
     return model.to(device).eval()
@@ -54,7 +61,7 @@ def feats_to_rgb(decoder_feats):
     Input : [B, T, C, H, W]   (assumes B == 1)
     Output: [T, H, W, 3] in [0, 1]
     """
-    B, T, C, H, W = decoder_feats.shape
+    B, T, C, H, W = decoder_feats.shape #it has 128 dims, this is the 768 equivalent of DINO
     assert B == 1, "visualization assumes batch size 1"
 
     # [T*H*W, C]
